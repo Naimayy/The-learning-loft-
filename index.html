@@ -345,11 +345,33 @@
   .sub-attachment img { max-width: 180px; max-height: 120px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; }
   .sub-attachment video { max-width: 180px; max-height: 120px; border-radius: 6px; }
 
-  @media (max-width: 600px) {
-    .msg-layout { grid-template-columns: 1fr; }
-    .msg-sidebar { display: none; }
-    .msg-sidebar.mobile-show { display: flex; }
+  @media (max-width: 700px) {
+    .msg-layout { grid-template-columns: 1fr; position: relative; }
+    .msg-sidebar { position: absolute; inset: 0; z-index: 2; background: white; }
+    .msg-sidebar.msg-hidden { display: none; }
+    .msg-chat-area { position: absolute; inset: 0; z-index: 1; }
+    .msg-chat-area.msg-hidden { display: none; }
   }
+
+  /* ===== CONTACT PICKER DROPDOWN ===== */
+  .msg-new-btn { width: 100%; padding: 10px 14px; background: var(--primary); color: white; border: none; border-radius: 0; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; display: flex; align-items: center; gap: 8px; transition: background .15s; }
+  .msg-new-btn:hover { background: var(--primary-light); }
+  .msg-picker-wrap { position: relative; }
+  .msg-picker-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border); border-top: none; z-index: 400; max-height: 320px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.14); }
+  .msg-picker-section { padding: 8px 12px 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--text3); background: var(--bg); border-bottom: 1px solid var(--bg3); }
+  .msg-picker-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; transition: background .12s; border-bottom: 1px solid var(--bg3); }
+  .msg-picker-item:last-child { border-bottom: none; }
+  .msg-picker-item:hover { background: var(--bg); }
+  .msg-picker-av { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: white; flex-shrink: 0; }
+  .msg-picker-av.owner { background: var(--accent); }
+  .msg-picker-av.admin { background: #1a5fa0; }
+  .msg-picker-av.student { background: var(--success); }
+  .msg-picker-name { font-size: 13px; font-weight: 600; color: var(--primary); }
+  .msg-picker-role { font-size: 11px; color: var(--text3); margin-top: 1px; }
+  .msg-search-box { padding: 8px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: white; z-index: 1; }
+  .msg-search-box input { width: 100%; padding: 7px 10px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 13px; font-family: 'DM Sans', sans-serif; outline: none; }
+  .msg-search-box input:focus { border-color: var(--primary-light); }
+  .msg-thread-role { font-size: 10px; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin-left: 4px; }
 
   /* ===== DISCUSSION ROOM ===== */
   .disc-session-banner {
@@ -734,6 +756,11 @@
   function restoreOrLogin() {
     const savedUser = typeof getSession === 'function' ? getSession() : null;
     if (savedUser) {
+      // Try loading cached DB for instant render
+      try {
+        const cachedDB = localStorage.getItem('ll_db_cache');
+        if (cachedDB) window.DB = JSON.parse(cachedDB);
+      } catch(e) {}
       window.currentUser = savedUser;
       if (typeof setupSidebar === 'function') setupSidebar();
       showPage('app-page');
@@ -743,13 +770,28 @@
     }
   }
 
+  // If there's a saved session AND cached DB, skip the loading screen entirely
+  (function fastStart() {
+    try {
+      const savedUser = typeof getSession === 'function' ? getSession() : null;
+      const cachedDB = localStorage.getItem('ll_db_cache');
+      if (savedUser && cachedDB) {
+        window.DB = JSON.parse(cachedDB);
+        window.currentUser = savedUser;
+        if (typeof setupSidebar === 'function') setupSidebar();
+        showPage('app-page');
+        if (typeof renderView === 'function') renderView('dashboard');
+      }
+    } catch(e) {}
+  })();
+
   let loadingDone = false;
   const timeout = setTimeout(() => {
     // Firebase is taking too long — restore session from localStorage so user
     // stays logged in. When Firebase eventually loads, onValue will re-render
     // the current view with real data.
     if (!loadingDone) { loadingDone = true; restoreOrLogin(); }
-  }, 5000);
+  }, 2000);
 
   onValue(academyRef, (snapshot) => {
     clearTimeout(timeout);
@@ -772,6 +814,8 @@
         discussion: val.discussion || { sessions: [], posts: [] },
         leaves: val.leaves || []
       };
+      // Cache DB for instant load next time
+      try { localStorage.setItem('ll_db_cache', JSON.stringify(window.DB)); } catch(e) {}
     } else {
       window.DB = window.defaultData();
       window._fbSave(window.DB);
@@ -1245,26 +1289,27 @@ function showPage(id) {
   }
 }
 
+/* ===== MESSAGE THREAD HELPERS ===== */
+function getMyMsgId(u) {
+  return u.role === 'owner' ? 'owner' : u.role === 'admin' ? u.email : u.id;
+}
+function makeThreadId(a, b) { return [String(a), String(b)].sort().join('||'); }
+
 function countUnreadMessages() {
   const u = window.currentUser;
   if (!u) return 0;
   const DB = window.DB;
   const msgs = DB.messages || {};
+  const myId = getMyMsgId(u);
   let count = 0;
-  if (u.role === 'owner' || u.role === 'admin') {
-    // Count all unread messages sent to owner/admin
-    Object.values(msgs).forEach(thread => {
-      (thread.messages || []).forEach(m => {
-        if (m.toRole !== 'student' && !m.readByStaff) count++;
-      });
-    });
-  } else {
-    // Student: count unread replies from staff
-    const thread = msgs[u.id] || {};
+  Object.entries(msgs).forEach(([threadId, thread]) => {
+    // Only count threads this user is part of
+    const parts = threadId.includes('||') ? threadId.split('||') : [threadId, 'owner'];
+    if (!parts.includes(myId) && u.role !== 'owner') return;
     (thread.messages || []).forEach(m => {
-      if (m.fromRole !== 'student' && !m.readByStudent) count++;
+      if (m.senderId !== myId && !(m.readBy || {})[myId]) count++;
     });
-  }
+  });
   return count;
 }
 
@@ -2735,97 +2780,236 @@ function setWbTool(tool) {
 
 /* ===== MESSAGES ===== */
 let activeThread = null;
+let msgPickerOpen = false;
 
-function renderMessages() {
+// Build the contact list for the current user
+function getMsgContacts() {
   const u = window.currentUser;
   const DB = window.DB;
-  const msgs = DB.messages || {};
-  const isStaff = u.role === 'owner' || u.role === 'admin';
-  let threadListHtml = '';
-
-  if (isStaff) {
-    // Show all student AND admin threads
-    const students = DB.students || [];
-    const admins = (DB.admins || []).filter(a => a.email.toLowerCase() !== u.email?.toLowerCase());
-    const allContacts = [
-      ...students.map(s => ({ id: s.id, name: s.name, role: 'student' })),
-      ...admins.map(a => ({ id: a.email, name: a.name, role: 'admin' }))
-    ];
-    if (!allContacts.length) {
-      document.getElementById('view-messages').innerHTML=`
-        <div class="page-header"><h2>💬 Messages</h2><p>No students or admins yet. Add users to get started.</p></div>`;
-      return;
-    }
-    if (allContacts.length > 0 && !activeThread) activeThread = allContacts[0].id;
-    allContacts.forEach(contact => {
-      const thread = msgs[contact.id] || {};
-      const threadMsgs = thread.messages || [];
-      const lastMsg = threadMsgs[threadMsgs.length-1];
-      const hasUnread = threadMsgs.some(m => m.fromRole === 'student' && !m.readByStaff);
-      const roleTag = contact.role === 'admin' ? `<span style="font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-left:4px;">Admin</span>` : '';
-      threadListHtml += `<div class="msg-thread-item${activeThread===contact.id?' active':''}" onclick="openThread('${esc(contact.id)}')">
-        ${hasUnread?'<div class="msg-thread-unread"></div>':''}
-        <div class="msg-thread-name">${esc(contact.name)}${roleTag}</div>
-        <div class="msg-thread-preview">${lastMsg?esc(lastMsg.text.substring(0,40)):'No messages yet'}</div>
-      </div>`;
-    });
+  const contacts = [];
+  if (u.role === 'owner') {
+    // Owner can message all admins and all students
+    (DB.admins || []).forEach(a => contacts.push({ id: a.email, name: a.name, role: 'admin' }));
+    (DB.students || []).forEach(s => contacts.push({ id: s.id, name: s.name, role: 'student' }));
+  } else if (u.role === 'admin') {
+    // Admin can message the owner and all students
+    contacts.push({ id: 'owner', name: (DB.owner && DB.owner.name) || 'Academy Owner', role: 'owner' });
+    (DB.students || []).forEach(s => contacts.push({ id: s.id, name: s.name, role: 'student' }));
   } else {
-    // Student: only their own thread with staff
-    activeThread = u.id;
-    const thread = msgs[u.id] || {};
-    const threadMsgs = thread.messages || [];
-    const lastMsg = threadMsgs[threadMsgs.length-1];
-    threadListHtml = `<div class="msg-thread-item active">
-      <div class="msg-thread-name">Academy Support</div>
-      <div class="msg-thread-preview">${lastMsg?esc(lastMsg.text.substring(0,40)):'Send a message to get help'}</div>
-    </div>`;
+    // Student can message the owner and all admins
+    contacts.push({ id: 'owner', name: (DB.owner && DB.owner.name) || 'Academy Owner', role: 'owner' });
+    (DB.admins || []).forEach(a => contacts.push({ id: a.email, name: a.name, role: 'admin' }));
   }
-
-  document.getElementById('view-messages').innerHTML=`
-    <div class="page-header"><h2>💬 Messages</h2><p>${isStaff?'Student messages — you can only respond, students cannot message each other.':'Message the academy team for help or questions.'}</p></div>
-    <div class="msg-layout">
-      <div class="msg-sidebar">
-        <div class="msg-sidebar-header">${isStaff?'Student Conversations':'My Conversation'}</div>
-        <div class="msg-thread-list" id="msg-thread-list">${threadListHtml}</div>
-      </div>
-      <div class="msg-chat-area" id="msg-chat-area">
-        ${activeThread ? renderChatArea(activeThread) : '<div class="msg-empty">👆 Select a conversation</div>'}
-      </div>
-    </div>`;
-
-  // Mark read
-  if (activeThread && isStaff) markThreadRead(activeThread, 'staff');
-  if (!isStaff) markThreadRead(u.id, 'student');
-  scrollMsgToBottom();
+  return contacts;
 }
 
-function renderChatArea(threadId) {
+// Get the name for a participant ID
+function getContactName(participantId) {
+  const DB = window.DB;
+  if (participantId === 'owner') return (DB.owner && DB.owner.name) || 'Academy Owner';
+  const admin = (DB.admins || []).find(a => a.email === participantId);
+  if (admin) return admin.name;
+  const student = (DB.students || []).find(s => s.id === participantId);
+  if (student) return student.name;
+  return participantId;
+}
+
+function getContactRole(participantId) {
+  const DB = window.DB;
+  if (participantId === 'owner') return 'owner';
+  if ((DB.admins || []).find(a => a.email === participantId)) return 'admin';
+  return 'student';
+}
+
+// Get all threads involving the current user
+function getMyThreads() {
   const u = window.currentUser;
   const DB = window.DB;
-  const isStaff = u.role === 'owner' || u.role === 'admin';
-  const thread = (DB.messages||{})[threadId] || {};
-  const threadMsgs = thread.messages || [];
-  const student = (DB.students||[]).find(s=>s.id===threadId);
-  const header = isStaff ? (student?student.name:'Student') : 'Academy Support';
+  const myId = getMyMsgId(u);
+  const msgs = DB.messages || {};
+  const threads = [];
 
-  let bubblesHtml = threadMsgs.length ? threadMsgs.map(m => {
-    const mine = isStaff ? m.fromRole!=='student' : m.fromRole==='student';
-    const initials = (m.senderName||'?')[0].toUpperCase();
-    return `<div class="msg-bubble-wrap${mine?' mine':''}">
-      <div class="msg-bubble-avatar">${initials}</div>
-      <div>
-        <div class="msg-bubble">${esc(m.text)}</div>
-        <div class="msg-bubble-time">${fmtDate(m.timestamp)} · ${esc(m.senderName)}</div>
-      </div>
-    </div>`;
-  }).join('') : '<div style="text-align:center;color:var(--text3);font-size:13px;padding:20px;">No messages yet. Say hello!</div>';
+  Object.entries(msgs).forEach(([threadId, thread]) => {
+    if (!(thread.messages || []).length) return;
+    let parts;
+    if (threadId.includes('||')) {
+      parts = threadId.split('||');
+    } else {
+      // Legacy: old student-keyed thread — treat as owner||studentId
+      parts = ['owner', threadId];
+    }
+    if (!parts.includes(myId)) return;
+    const otherId = parts.find(p => p !== myId) || parts[0];
+    const otherName = getContactName(otherId);
+    const otherRole = getContactRole(otherId);
+    const lastMsg = (thread.messages || []).slice(-1)[0];
+    const unread = (thread.messages || []).some(m => m.senderId !== myId && !(m.readBy || {})[myId]);
+    // Normalize thread key
+    const normalizedId = threadId.includes('||') ? threadId : makeThreadId('owner', threadId);
+    threads.push({ threadId: normalizedId, otherId, otherName, otherRole, lastMsg, unread });
+  });
 
-  return `<div class="msg-chat-header">${esc(header)}</div>
-    <div class="msg-chat-messages" id="msg-bubbles">${bubblesHtml}</div>
-    <div class="msg-input-row">
-      <input type="text" id="msg-input" placeholder="Type a message…" onkeydown="if(event.key==='Enter')sendMessage('${esc(threadId)}')"/>
-      <button onclick="sendMessage('${esc(threadId)}')">Send</button>
-    </div>`;
+  threads.sort((a, b) => (b.lastMsg?.timestamp || 0) - (a.lastMsg?.timestamp || 0));
+  return threads;
+}
+
+function msgContactListHtml(myId, contacts, msgs, activeId, filter) {
+  var filtered = filter ? contacts.filter(function(c){ return c.name.toLowerCase().indexOf(filter.toLowerCase()) > -1; }) : contacts;
+  if (!filtered.length) {
+    return '<div style="padding:24px 16px;text-align:center;color:var(--text3);font-size:13px;">' + (filter ? 'No contacts match.' : 'No contacts yet.') + '</div>';
+  }
+  var roleColors = { owner:'var(--accent)', admin:'#1a5fa0', student:'var(--success)' };
+  var roleLabels = { owner:'Owner', admin:'Admins', student:'Students' };
+  var groups = { owner:[], admin:[], student:[] };
+  filtered.forEach(function(c){ if(groups[c.role]) groups[c.role].push(c); });
+  var html = '';
+  ['owner','admin','student'].forEach(function(role){
+    if (!groups[role].length) return;
+    html += '<div style="padding:5px 14px 3px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);background:var(--bg3);border-bottom:1px solid var(--border);">' + roleLabels[role] + '</div>';
+    groups[role].forEach(function(c){
+      var tid = makeThreadId(myId, c.id);
+      var thread = (msgs[tid] || msgs[c.id] || {});
+      var threadMsgs = thread.messages || [];
+      var lastMsg = threadMsgs[threadMsgs.length - 1];
+      var unread = threadMsgs.some(function(m){ return m.senderId !== myId && !(m.readBy||{})[myId]; });
+      var isActive = activeId === tid || activeId === c.id;
+      var preview = lastMsg ? esc(lastMsg.text.substring(0,40)) : '<i>Tap to start chatting</i>';
+      html += '<div class="msg-thread-item' + (isActive ? ' active' : '') + '" onclick="startConversation(\'' + esc(c.id) + '\')" style="display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;">';
+      html +=   '<div style="width:40px;height:40px;border-radius:50%;background:' + roleColors[role] + ';display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:white;flex-shrink:0;">' + c.name[0].toUpperCase() + '</div>';
+      html +=   '<div style="flex:1;min-width:0;">';
+      html +=     '<div style="display:flex;align-items:center;gap:6px;">';
+      html +=       '<span style="font-size:13px;font-weight:600;color:var(--primary);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(c.name) + '</span>';
+      if (unread) html += '<span style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0;display:inline-block;"></span>';
+      html +=     '</div>';
+      html +=     '<div style="font-size:11px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + preview + '</div>';
+      html +=   '</div>';
+      html += '</div>';
+    });
+  });
+  return html;
+}
+
+function renderMessages() {
+  var u = window.currentUser;
+  var DB = window.DB;
+  var myId = getMyMsgId(u);
+  var contacts = getMsgContacts();
+  var msgs = DB.messages || {};
+  var isMobile = window.innerWidth <= 700;
+  if (isMobile) activeThread = null;
+
+  var contactListHtml = msgContactListHtml(myId, contacts, msgs, activeThread, '');
+
+  var chatHtml = activeThread
+    ? renderChatArea(activeThread)
+    : '<div class="msg-empty"><svg viewBox="0 0 24 24" fill="currentColor" width="40" height="40" style="opacity:.3"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg><span>Select someone from the list</span></div>';
+
+  document.getElementById('view-messages').innerHTML =
+    '<div class="page-header"><h2>\uD83D\uDCAC Messages</h2><p>All your contacts are listed on the left. Click anyone to chat.</p></div>' +
+    '<div class="msg-layout" id="msg-layout">' +
+      '<div class="msg-sidebar" id="msg-sidebar">' +
+        '<div style="padding:12px 14px;border-bottom:1px solid var(--border);background:var(--bg);">' +
+          '<div style="font-size:14px;font-weight:700;color:var(--primary);margin-bottom:8px;">All Contacts</div>' +
+          '<input type="text" id="msg-contact-search" placeholder="Search by name\u2026" oninput="filterMsgContacts()" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:20px;font-size:13px;outline:none;box-sizing:border-box;font-family:inherit;"/>' +
+        '</div>' +
+        '<div id="msg-contact-list" style="flex:1;overflow-y:auto;">' + contactListHtml + '</div>' +
+      '</div>' +
+      '<div class="msg-chat-area' + (isMobile ? ' msg-hidden' : '') + '" id="msg-chat-area">' + chatHtml + '</div>' +
+    '</div>';
+
+  if (activeThread && !isMobile) { markThreadRead(activeThread); scrollMsgToBottom(); }
+  if (isMobile) {
+    setTimeout(function(){
+      var btns = document.querySelectorAll('.msg-back-btn');
+      btns.forEach(function(b){ b.style.display = 'inline-flex'; });
+    }, 0);
+  }
+}
+
+function filterMsgContacts() {
+  var u = window.currentUser;
+  var myId = getMyMsgId(u);
+  var contacts = getMsgContacts();
+  var msgs = (window.DB || {}).messages || {};
+  var q = (document.getElementById('msg-contact-search') || {}).value || '';
+  var list = document.getElementById('msg-contact-list');
+  if (list) list.innerHTML = msgContactListHtml(myId, contacts, msgs, activeThread, q);
+}
+
+function startConversation(contactId) {
+  var u = window.currentUser;
+  var myId = getMyMsgId(u);
+  activeThread = makeThreadId(myId, contactId);
+  var chatArea = document.getElementById('msg-chat-area');
+  if (chatArea) {
+    chatArea.innerHTML = renderChatArea(activeThread);
+    if (window.innerWidth <= 700) {
+      chatArea.classList.remove('msg-hidden');
+      var sidebar = document.getElementById('msg-sidebar');
+      if (sidebar) sidebar.classList.add('msg-hidden');
+      var btns = chatArea.querySelectorAll('.msg-back-btn');
+      btns.forEach(function(b){ b.style.display = 'inline-flex'; });
+    }
+  }
+  markThreadRead(activeThread);
+  scrollMsgToBottom();
+  var contacts = getMsgContacts();
+  var msgs = (window.DB || {}).messages || {};
+  var q = (document.getElementById('msg-contact-search') || {}).value || '';
+  var list = document.getElementById('msg-contact-list');
+  if (list) list.innerHTML = msgContactListHtml(myId, contacts, msgs, activeThread, q);
+  setupSidebar();
+}
+
+function msgBackToList() {
+  activeThread = null;
+  var sidebar = document.getElementById('msg-sidebar');
+  var chatArea = document.getElementById('msg-chat-area');
+  if (sidebar) sidebar.classList.remove('msg-hidden');
+  if (chatArea) chatArea.classList.add('msg-hidden');
+}
+
+function toggleMsgPicker() {}
+function closeMsgPickerOnOutside() {}
+function filterMsgPicker() {}
+
+function renderChatArea(threadId) {
+  var u = window.currentUser;
+  var DB = window.DB;
+  var myId = getMyMsgId(u);
+
+  var normalizedId = threadId.includes('||') ? threadId : makeThreadId('owner', threadId);
+  var thread = (DB.messages||{})[normalizedId] || (DB.messages||{})[threadId] || {};
+  var threadMsgs = thread.messages || [];
+
+  var parts = normalizedId.split('||');
+  var otherId = parts.find(function(p){ return p !== myId; }) || parts[0];
+  var otherName = getContactName(otherId);
+  var otherRole = getContactRole(otherId);
+  var roleColor = otherRole === 'owner' ? 'var(--accent)' : otherRole === 'admin' ? '#1a5fa0' : 'var(--success)';
+
+  var bubblesHtml = threadMsgs.length ? threadMsgs.map(function(m){
+    var mine = m.senderId === myId;
+    var initials = (m.senderName||'?')[0].toUpperCase();
+    return '<div class="msg-bubble-wrap' + (mine ? ' mine' : '') + '">' +
+      '<div class="msg-bubble-avatar">' + initials + '</div>' +
+      '<div><div class="msg-bubble">' + esc(m.text) + '</div>' +
+      '<div class="msg-bubble-time">' + fmtDate(m.timestamp) + ' \u00b7 ' + esc(m.senderName) + '</div></div>' +
+      '</div>';
+  }).join('') : '<div style="text-align:center;color:var(--text3);font-size:13px;padding:30px 16px;">No messages yet. Say hello!</div>';
+
+  var safeId = esc(normalizedId);
+  return '<div class="msg-chat-header" style="display:flex;align-items:center;gap:10px;">' +
+    '<button class="msg-back-btn" onclick="msgBackToList()" style="display:none;background:none;border:none;cursor:pointer;padding:2px 8px 2px 0;color:var(--primary);font-size:22px;line-height:1;align-items:center;">\u2190</button>' +
+    '<div style="width:36px;height:36px;border-radius:50%;background:' + roleColor + ';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:white;flex-shrink:0;">' + otherName[0].toUpperCase() + '</div>' +
+    '<div><div style="font-size:14px;font-weight:600;color:var(--primary);">' + esc(otherName) + '</div>' +
+    '<div style="font-size:11px;color:' + roleColor + ';text-transform:capitalize;">' + otherRole + '</div></div>' +
+    '</div>' +
+    '<div class="msg-chat-messages" id="msg-bubbles">' + bubblesHtml + '</div>' +
+    '<div class="msg-input-row">' +
+    '<input type="text" id="msg-input" placeholder="Type a message\u2026" onkeydown="if(event.key===\'Enter\')sendMessage(\'' + safeId + '\')"/>' +
+    '<button onclick="sendMessage(\'' + safeId + '\')">Send</button>' +
+    '</div>';
 }
 
 function scrollMsgToBottom() {
@@ -2839,13 +3023,25 @@ function openThread(threadId) {
   activeThread = threadId;
   const chatArea = document.getElementById('msg-chat-area');
   if (chatArea) chatArea.innerHTML = renderChatArea(threadId);
-  markThreadRead(threadId, 'staff');
+  markThreadRead(threadId);
   scrollMsgToBottom();
-  // Update active in list
-  document.querySelectorAll('.msg-thread-item').forEach(el=>el.classList.remove('active'));
-  const items=document.querySelectorAll('.msg-thread-item');
-  items.forEach(el=>{if(el.querySelector('.msg-thread-name')?.textContent.trim()===((window.DB.students||[]).find(s=>s.id===threadId)||{}).name?.trim()) el.classList.add('active');});
-  setupSidebar(); // refresh badge count
+  document.querySelectorAll('.msg-thread-item').forEach(el => {
+    el.classList.toggle('active', el.onclick?.toString().includes(esc(threadId)));
+  });
+  // Re-render thread list to update active state
+  const threadListEl = document.getElementById('msg-thread-list');
+  if (threadListEl) {
+    const myThreads = getMyThreads();
+    threadListEl.innerHTML = myThreads.length ? myThreads.map(t => {
+      const roleColor = t.otherRole === 'owner' ? 'var(--accent)' : t.otherRole === 'admin' ? '#1a5fa0' : 'var(--success)';
+      return `<div class="msg-thread-item${activeThread===t.threadId?' active':''}" onclick="openThread('${esc(t.threadId)}')">
+        ${t.unread?'<div class="msg-thread-unread"></div>':''}
+        <div class="msg-thread-name">${esc(t.otherName)} <span class="msg-thread-role" style="color:${roleColor}">${t.otherRole}</span></div>
+        <div class="msg-thread-preview">${t.lastMsg?esc(t.lastMsg.text.substring(0,40)):'No messages yet'}</div>
+      </div>`;
+    }).join('') : '<div style="padding:20px 16px;color:var(--text3);font-size:13px;">No conversations yet.</div>';
+  }
+  setupSidebar();
 }
 
 async function sendMessage(threadId) {
@@ -2854,38 +3050,53 @@ async function sendMessage(threadId) {
   if (!text) return;
   const u = window.currentUser;
   const DB = window.DB;
+  const myId = getMyMsgId(u);
+
+  // Normalize thread ID
+  let normalizedId = threadId;
+  if (!threadId.includes('||')) normalizedId = makeThreadId('owner', threadId);
+
   const msg = {
     text,
     senderName: u.name,
-    senderId: u.id,
+    senderId: myId,
     fromRole: u.role,
     timestamp: Date.now(),
-    readByStaff: u.role!=='student',
-    readByStudent: u.role==='student'
+    readBy: { [myId]: true }
   };
-  const existingThread = (DB.messages||{})[threadId] || {messages:[]};
+  const existingThread = (DB.messages||{})[normalizedId] || {messages:[]};
   const updatedThread = {...existingThread, messages:[...(existingThread.messages||[]), msg]};
-  const next = {...DB, messages:{...(DB.messages||{}), [threadId]: updatedThread}};
+  const next = {...DB, messages:{...(DB.messages||{}), [normalizedId]: updatedThread}};
   await saveData(next);
   if(input) input.value='';
+  activeThread = normalizedId;
   const chatArea=document.getElementById('msg-chat-area');
-  if(chatArea) chatArea.innerHTML=renderChatArea(threadId);
+  if(chatArea) chatArea.innerHTML=renderChatArea(normalizedId);
   scrollMsgToBottom();
   setupSidebar();
 }
 
-async function markThreadRead(threadId, who) {
+async function markThreadRead(threadId) {
+  const u = window.currentUser;
   const DB = window.DB;
-  const thread = (DB.messages||{})[threadId];
+  const myId = getMyMsgId(u);
+
+  // Support both normalized and legacy IDs
+  let normalizedId = threadId;
+  if (!threadId.includes('||')) normalizedId = makeThreadId('owner', threadId);
+
+  const thread = (DB.messages||{})[normalizedId];
   if (!thread) return;
   let changed = false;
   const msgs = (thread.messages||[]).map(m => {
-    if (who==='staff' && !m.readByStaff) { changed=true; return {...m,readByStaff:true}; }
-    if (who==='student' && !m.readByStudent) { changed=true; return {...m,readByStudent:true}; }
+    if (m.senderId !== myId && !(m.readBy || {})[myId]) {
+      changed = true;
+      return {...m, readBy: {...(m.readBy||{}), [myId]: true}};
+    }
     return m;
   });
   if (!changed) return;
-  const next={...DB,messages:{...(DB.messages||{}),[threadId]:{...thread,messages:msgs}}};
+  const next={...DB,messages:{...(DB.messages||{}),[normalizedId]:{...thread,messages:msgs}}};
   await saveData(next);
 }
 
@@ -4790,6 +5001,8 @@ window.addComment=addComment;window.deleteComment=deleteComment;
 window.setWbTool=setWbTool;window.wbUndo=wbUndo;window.wbClear=wbClear;window.wbSave=wbSave;window.wbDownload=wbDownload;
 window.wbStampSymbol=wbStampSymbol;window.wbCommitText=wbCommitText;
 window.sendMessage=sendMessage;window.openThread=openThread;
+window.toggleMsgPicker=toggleMsgPicker;window.filterMsgPicker=filterMsgPicker;window.startConversation=startConversation;
+window.filterMsgContacts=filterMsgContacts;window.msgBackToList=msgBackToList;
 window.previewSubFile=previewSubFile;window.openImgModal=openImgModal;
 window.renderTests=renderTests;window.renderAttendance=renderAttendance;window.renderGrades=renderGrades;
 window.showAssignmentReportCard=showAssignmentReportCard;window.printAssignmentReport=printAssignmentReport;
