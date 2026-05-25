@@ -2896,10 +2896,47 @@ function renderMessages() {
   var contacts = getMsgContacts();
   var msgs = DB.messages || {};
   var isMobile = window.innerWidth <= 700;
+
+  // If the layout already exists this is a live Firebase update — just refresh in-place
+  var alreadyRendered = !!document.getElementById('msg-contact-list');
+  if (alreadyRendered) {
+    // Refresh contact list (unread dots + last-message previews)
+    var list = document.getElementById('msg-contact-list');
+    var q = (document.getElementById('msg-contact-search') || {}).value || '';
+    if (list) list.innerHTML = msgContactListHtml(myId, contacts, msgs, activeThread, q);
+    // Refresh chat bubbles if a chat is open (preserve input text)
+    if (activeThread) {
+      var inputEl = document.getElementById('msg-input');
+      var draft = inputEl ? inputEl.value : '';
+      var bubblesEl = document.getElementById('msg-bubbles');
+      var normalizedId = activeThread.includes('||') ? activeThread : makeThreadId('owner', activeThread);
+      var thread = (msgs[normalizedId] || msgs[activeThread] || {});
+      var threadMsgs = thread.messages || [];
+      var bubblesHtml = threadMsgs.length ? threadMsgs.map(function(m){
+        var mine = m.senderId === myId;
+        var initials = (m.senderName||'?')[0].toUpperCase();
+        return '<div class="msg-bubble-wrap' + (mine ? ' mine' : '') + '">' +
+          '<div class="msg-bubble-avatar">' + initials + '</div>' +
+          '<div><div class="msg-bubble">' + esc(m.text) + '</div>' +
+          '<div class="msg-bubble-time">' + fmtDate(m.timestamp) + ' \u00b7 ' + esc(m.senderName) + '</div></div>' +
+          '</div>';
+      }).join('') : '<div style="text-align:center;color:var(--text3);font-size:13px;padding:30px 16px;">No messages yet. Say hello!</div>';
+      if (bubblesEl) {
+        var wasAtBottom = bubblesEl.scrollHeight - bubblesEl.scrollTop - bubblesEl.clientHeight < 60;
+        bubblesEl.innerHTML = bubblesHtml;
+        if (wasAtBottom) bubblesEl.scrollTop = bubblesEl.scrollHeight;
+      }
+      if (inputEl) inputEl.value = draft;
+      markThreadRead(activeThread);
+    }
+    setupSidebar();
+    return;
+  }
+
+  // First render — build full layout
   if (isMobile) activeThread = null;
 
   var contactListHtml = msgContactListHtml(myId, contacts, msgs, activeThread, '');
-
   var chatHtml = activeThread
     ? renderChatArea(activeThread)
     : '<div class="msg-empty"><svg viewBox="0 0 24 24" fill="currentColor" width="40" height="40" style="opacity:.3"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg><span>Select someone from the list</span></div>';
@@ -2920,8 +2957,7 @@ function renderMessages() {
   if (activeThread && !isMobile) { markThreadRead(activeThread); scrollMsgToBottom(); }
   if (isMobile) {
     setTimeout(function(){
-      var btns = document.querySelectorAll('.msg-back-btn');
-      btns.forEach(function(b){ b.style.display = 'inline-flex'; });
+      document.querySelectorAll('.msg-back-btn').forEach(function(b){ b.style.display = 'inline-flex'; });
     }, 0);
   }
 }
