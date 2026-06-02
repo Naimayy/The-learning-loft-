@@ -796,6 +796,8 @@
   onValue(academyRef, (snapshot) => {
     clearTimeout(timeout);
     const val = snapshot.val();
+    // Capture previous unread count before updating DB (for new-message detection)
+    const prevUnread = (window.currentUser && typeof countUnreadMessages === 'function') ? countUnreadMessages() : 0;
     if (val) {
       window.DB = {
         owner: val.owner || window.defaultData().owner,
@@ -834,7 +836,14 @@
         showPage('login-page');
       }
     } else if (window.currentUser && window.currentView) {
-      // Real-time DB update while already logged in — re-render current view
+      // Check if new messages arrived — notify receiver if on a different view
+      const newUnread = typeof countUnreadMessages === 'function' ? countUnreadMessages() : 0;
+      if (newUnread > prevUnread && window.currentView !== 'messages' && typeof toast === 'function') {
+        toast('💬 New message received! Click Messages to read.');
+      }
+      // Always update the sidebar badge so unread count stays current on every view
+      if (typeof setupSidebar === 'function') setupSidebar();
+      // Re-render current view with latest data
       renderView(window.currentView);
     }
   }, () => {
