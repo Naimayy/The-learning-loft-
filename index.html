@@ -1312,9 +1312,11 @@ function countUnreadMessages() {
   const myId = getMyMsgId(u);
   let count = 0;
   Object.entries(msgs).forEach(([threadId, thread]) => {
+    // Normalize: legacy keys like studentId stored without || must be treated as owner||studentId
+    const normalizedId = threadId.includes('||') ? threadId : makeThreadId('owner', threadId);
+    const parts = normalizedId.split('||');
     // Only count threads this user is part of
-    const parts = threadId.includes('||') ? threadId.split('||') : [threadId, 'owner'];
-    if (!parts.includes(myId) && u.role !== 'owner') return;
+    if (!parts.includes(myId)) return;
     (thread.messages || []).forEach(m => {
       if (m.senderId !== myId && !(m.readBy || {})[myId]) count++;
     });
@@ -2984,7 +2986,8 @@ function filterMsgContacts() {
 function startConversation(contactId) {
   var u = window.currentUser;
   var myId = getMyMsgId(u);
-  activeThread = makeThreadId(myId, contactId);
+  // Always use sorted normalized thread ID so both parties share same key
+  activeThread = [myId, contactId].sort().join('||');
   var chatArea = document.getElementById('msg-chat-area');
   if (chatArea) {
     chatArea.innerHTML = renderChatArea(activeThread);
@@ -3097,9 +3100,9 @@ async function sendMessage(threadId) {
   const DB = window.DB;
   const myId = getMyMsgId(u);
 
-  // Normalize thread ID
-  let normalizedId = threadId;
-  if (!threadId.includes('||')) normalizedId = makeThreadId('owner', threadId);
+  // ALWAYS normalize thread ID — this ensures both parties share the same key
+  const parts = threadId.includes('||') ? threadId.split('||') : [myId, threadId];
+  const normalizedId = [parts[0], parts[1]].sort().join('||');
 
   const msg = {
     text,
@@ -3195,8 +3198,24 @@ function renderTests() {
         <div class="form-group" style="flex:1;min-width:140px;"><label>Max Attempts</label><input id="test-attempts" type="number" min="1" max="10" value="1" /></div>
       </div>
       <div style="margin-bottom:16px;">
-        <div class="section-header" style="margin-bottom:10px;"><h3 style="font-size:15px;">Questions</h3><button class="btn btn-ghost btn-sm" onclick="addQuestionBuilder()">+ Add Question</button></div>
+        <div class="section-header" style="margin-bottom:10px;"><h3 style="font-size:15px;">MCQ / Objective Questions</h3><button class="btn btn-ghost btn-sm" onclick="addQuestionBuilder()">+ Add Question</button></div>
         <div id="question-builder-list"></div>
+      </div>
+      <div style="background:var(--bg);border-radius:10px;padding:16px;border:1px solid var(--border);margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+          <span style="font-size:15px;">📄</span>
+          <h3 style="font-size:15px;color:var(--primary);font-family:'Playfair Display',serif;">Subjective / Question Paper (Optional)</h3>
+        </div>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;">Upload a question paper image. Students will see it after completing MCQs, with a separate timer. They will upload their answer as an image.</p>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>Question Paper Image</label>
+          <input type="file" id="test-qpaper-file" accept="image/*,.pdf" onchange="previewQPaper()" style="font-size:13px;"/>
+          <div id="test-qpaper-preview" style="margin-top:8px;"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Subjective Section Duration (minutes)</label>
+          <input id="test-subj-duration" type="number" min="1" max="300" value="45" style="width:120px;" />
+        </div>
       </div>
       <button class="btn btn-primary" onclick="submitCreateTest()">📤 Publish Test</button>
     </div>`;
@@ -3207,28 +3226,37 @@ function renderTests() {
   } else {
     tests.forEach((t, tIdx) => {
       const myResults = (t.results || []).filter(r => r.studentId === u.id);
-      const attemptsLeft = (t.maxAttempts || 1) - myResults.length;
+      // For QP-only tests, track attempts via subjResults
+      const mySubjResults = (t.subjResults || []).filter(r => r.studentId === u.id);
+      const hasQPOnly = !(t.questions||[]).length && t.qPaper;
+      const attemptCount = hasQPOnly ? mySubjResults.length : myResults.length;
+      const attemptsLeft = (t.maxAttempts || 1) - attemptCount;
       const bestScore = myResults.length ? Math.max(...myResults.map(r => r.score)) : null;
+      const mySubjResult = (t.subjResults || []).find(r => r.studentId === u.id);
       html += `<div class="test-card">
         <div class="test-card-header">
           <div>
             <div class="test-card-title">${esc(t.title)}</div>
             <div class="test-meta">
-              <span>⏱ ${t.duration} min</span>
+              ${(t.questions||[]).length ? `<span>⏱ MCQs: ${t.duration} min</span>` : ''}
+              ${t.qPaper ? `<span>📄 Subjective: ${t.subjDuration||45} min</span>` : ''}
               <span>📊 Pass: ${t.passScore}%</span>
-              <span>❓ ${(t.questions||[]).length} Questions</span>
+              ${(t.questions||[]).length ? `<span>❓ ${(t.questions||[]).length} MCQs</span>` : ''}
+              ${t.qPaper ? `<span style="color:var(--accent);">📝 Has Question Paper</span>` : ''}
               <span>🔄 Max Attempts: ${t.maxAttempts||1}</span>
             </div>
           </div>
-          ${isAdmin ? `<div style="display:flex;gap:6px;">
-            <button class="btn btn-ghost btn-sm" onclick="viewTestResults(${tIdx})">📊 Results</button>
+          ${isAdmin ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${(t.questions||[]).length ? `<button class="btn btn-ghost btn-sm" onclick="viewTestResults(${tIdx})">📊 MCQ Results</button>` : ''}
+            ${t.qPaper ? `<button class="btn btn-ghost btn-sm" onclick="viewSubjectiveSubmissions(${tIdx})">📝 Subjective (${(t.subjResults||[]).length})</button>` : ''}
             <button class="btn btn-danger btn-sm" onclick="deleteTest(${tIdx})">🗑</button>
           </div>` : ''}
         </div>
         ${t.desc ? `<p style="font-size:13px;color:var(--text2);margin-bottom:10px;">${esc(t.desc)}</p>` : ''}
         <div class="test-actions">
           ${!isAdmin && attemptsLeft > 0 ? `<button class="btn btn-primary btn-sm" onclick="startTest(${tIdx})">▶ Start Test</button>` : ''}
-          ${!isAdmin && myResults.length > 0 ? `<button class="btn btn-ghost btn-sm" onclick="viewMyTestResult(${tIdx})">📄 My Results (Best: ${bestScore}%)</button>` : ''}
+          ${!isAdmin && myResults.length > 0 ? `<button class="btn btn-ghost btn-sm" onclick="viewMyTestResult(${tIdx})">📄 MCQ Result (Best: ${bestScore}%)</button>` : ''}
+          ${!isAdmin && mySubjResult ? `<span class="badge ${mySubjResult.marks!=null?'badge-graded':'badge-pending'}">${mySubjResult.marks!=null?'📝 Subjective: '+mySubjResult.marks+' marks':'📝 Subjective: Pending Review'}</span>` : ''}
           ${!isAdmin && attemptsLeft <= 0 ? `<span class="badge badge-graded">Max attempts reached</span>` : ''}
           ${isAdmin ? `<button class="btn btn-ghost btn-sm" onclick="viewTestResults(${tIdx})">View All Submissions (${(t.results||[]).length})</button>` : ''}
         </div>
@@ -3321,6 +3349,21 @@ function removeQuestion(qIdx) {
 window.removeQuestion = removeQuestion;
 window.addQuestionBuilder = addQuestionBuilder;
 
+function previewQPaper() {
+  const fileInput = document.getElementById('test-qpaper-file');
+  const preview = document.getElementById('test-qpaper-preview');
+  if (!preview || !fileInput || !fileInput.files.length) return;
+  const file = fileInput.files[0];
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    preview.innerHTML = `<img src="${e.target.result}" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--border);object-fit:contain;" /><div style="font-size:11px;color:var(--text3);margin-top:4px;">${esc(file.name)}</div>`;
+    window._qpaperBase64 = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+window.previewQPaper = previewQPaper;
+window._qpaperBase64 = null;
+
 async function submitCreateTest() {
   const title = document.getElementById('test-title')?.value.trim();
   const desc = document.getElementById('test-desc')?.value.trim();
@@ -3366,9 +3409,12 @@ async function submitCreateTest() {
     }
     questions.push({ text, type, options, correctIndex, correctAnswer, points, images });
   }
-  if (!questions.length) { toast('Please add at least one question.', 'error'); return; }
+  if (!questions.length && !window._qpaperBase64) { toast('Please add at least one question or upload a question paper.', 'error'); return; }
   const DB = window.DB;
-  const test = { title, desc, duration, passScore, maxAttempts, questions, results: [], timestamp: Date.now(), createdBy: window.currentUser.name };
+  const subjDuration = parseInt(document.getElementById('test-subj-duration')?.value) || 45;
+  const qPaper = window._qpaperBase64 || null;
+  const test = { title, desc, duration, passScore, maxAttempts, questions, results: [], subjResults: [], qPaper, subjDuration, timestamp: Date.now(), createdBy: window.currentUser.name };
+  window._qpaperBase64 = null;
   await saveData({ ...DB, tests: [test, ...(DB.tests || [])] });
   toast('Test published!', 'success');
   renderTests();
@@ -3387,6 +3433,31 @@ let activeTestIdx = null, activeTestAnswers = {}, activeTestTimer = null, active
 function startTest(tIdx) {
   const test = (window.DB.tests || [])[tIdx];
   if (!test) return;
+
+  // If test has NO MCQ questions but HAS a question paper, go straight to subjective
+  if (!(test.questions||[]).length && test.qPaper) {
+    activeSubjTIdx = tIdx;
+    activeSubjTimeLeft = (test.subjDuration || 45) * 60;
+    const view = document.getElementById('view-quiz-take');
+    document.querySelectorAll('.main-content > div').forEach(el => el.classList.add('hidden'));
+    view.classList.remove('hidden');
+    renderSubjectiveSection();
+    clearInterval(activeSubjTimer);
+    activeSubjTimer = setInterval(() => {
+      activeSubjTimeLeft--;
+      const el = document.getElementById('subj-timer');
+      if (el) {
+        let mins = Math.floor(activeSubjTimeLeft / 60);
+        let secs = activeSubjTimeLeft % 60;
+        el.textContent = '⏱ ' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
+        el.className = 'timer-display ' + (activeSubjTimeLeft <= 60 ? 'danger' : activeSubjTimeLeft <= 300 ? 'warning' : '');
+      }
+      if (activeSubjTimeLeft <= 0) { clearInterval(activeSubjTimer); submitSubjectiveAnswer(true); }
+    }, 1000);
+    return;
+  }
+
+  // Normal MCQ (or MCQ + QP) flow
   activeTestIdx = tIdx;
   activeTestAnswers = {};
   activeTestTimeLeft = (test.duration || 30) * 60;
@@ -3491,10 +3562,36 @@ async function submitTest(timeUp = false) {
   const score = totalPoints > 0 ? Math.round((earnedPoints / totalPoints) * 100) : 0;
   const passed = score >= (test.passScore || 60);
   const result = { studentId: u.id, studentName: u.name, score, earnedPoints, totalPoints, passed, feedback, timestamp: Date.now(), timeUp };
+
+  // Save MCQ result
   const updatedTest = { ...test, results: [...(test.results || []), result] };
   const updatedTests = (DB.tests || []).map((t, i) => i === tIdx ? updatedTest : t);
-  await saveData({ ...DB, tests: updatedTests });
-  // Show result screen
+  await saveData({ ...window.DB, tests: updatedTests });
+
+  // If test has a question paper, show MCQ result THEN launch QP section
+  if (test.qPaper) {
+    const view = document.getElementById('view-quiz-take');
+    view.innerHTML = `
+      <div class="page-header"><h2>${esc(test.title)} — MCQ Complete!</h2></div>
+      <div class="result-banner ${passed?'pass':'fail'}" style="margin-bottom:20px;">
+        <div class="result-score ${passed?'pass':'fail'}">${score}%</div>
+        <div style="font-size:18px;font-weight:600;margin-top:6px;">MCQ Section: ${passed?'✅ Passed':'📚 Not Passed'} • ${earnedPoints}/${totalPoints} points</div>
+        <div style="font-size:14px;color:var(--text2);margin-top:4px;">${timeUp?'MCQ time ran out — ':''}Now starting Subjective section…</div>
+      </div>
+      <div style="background:var(--bg);border-radius:12px;padding:20px;border:1px solid var(--border);text-align:center;">
+        <div style="font-size:15px;font-weight:600;color:var(--primary);margin-bottom:8px;">📄 Subjective / Question Paper Section</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">The question paper will appear below. Read it carefully and write your answers on paper, then upload a clear photo of your answer sheet before the timer ends.</p>
+        <button class="btn btn-primary" onclick="startSubjectiveSection(${tIdx})">▶ Start Subjective Section (${test.subjDuration||45} min)</button>
+      </div>`;
+    activeTestIdx = null;
+  } else {
+    // No QP — show full result screen immediately
+    showMCQResultScreen(test, score, passed, earnedPoints, totalPoints, feedback, timeUp);
+  }
+}
+window.submitTest = submitTest;
+
+function showMCQResultScreen(test, score, passed, earnedPoints, totalPoints, feedback, timeUp) {
   const view = document.getElementById('view-quiz-take');
   view.innerHTML = `<div class="page-header"><h2>${esc(test.title)} — Results</h2></div>
     <div class="result-banner ${passed?'pass':'fail'}">
@@ -3514,7 +3611,6 @@ async function submitTest(timeUp = false) {
     <button class="btn btn-primary" style="margin-top:16px;" onclick="navTo('tests')">← Back to Tests</button>`;
   activeTestIdx = null;
 }
-window.submitTest = submitTest;
 
 function viewTestResults(tIdx) {
   const test = (window.DB.tests || [])[tIdx];
@@ -3545,6 +3641,186 @@ function viewMyTestResult(tIdx) {
   viewTestResults(tIdx);
 }
 window.viewMyTestResult = viewMyTestResult;
+
+/* ===== SUBJECTIVE / QUESTION PAPER SECTION ===== */
+let activeSubjTimer = null, activeSubjTimeLeft = 0, activeSubjTIdx = null;
+
+function startSubjectiveSection(tIdx) {
+  const test = (window.DB.tests || [])[tIdx];
+  if (!test || !test.qPaper) return;
+  activeSubjTIdx = tIdx;
+  activeSubjTimeLeft = (test.subjDuration || 45) * 60;
+  const view = document.getElementById('view-quiz-take');
+  document.querySelectorAll('.main-content > div').forEach(el => el.classList.add('hidden'));
+  view.classList.remove('hidden');
+  renderSubjectiveSection();
+  clearInterval(activeSubjTimer);
+  activeSubjTimer = setInterval(() => {
+    activeSubjTimeLeft--;
+    const el = document.getElementById('subj-timer');
+    if (el) {
+      let mins = Math.floor(activeSubjTimeLeft / 60);
+      let secs = activeSubjTimeLeft % 60;
+      el.textContent = '⏱ ' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
+      el.className = 'timer-display ' + (activeSubjTimeLeft <= 60 ? 'danger' : activeSubjTimeLeft <= 300 ? 'warning' : '');
+    }
+    if (activeSubjTimeLeft <= 0) { clearInterval(activeSubjTimer); submitSubjectiveAnswer(true); }
+  }, 1000);
+}
+window.startSubjectiveSection = startSubjectiveSection;
+
+function renderSubjectiveSection() {
+  const tIdx = activeSubjTIdx;
+  if (tIdx === null) return;
+  const test = (window.DB.tests || [])[tIdx];
+  if (!test) return;
+  let mins = Math.floor(activeSubjTimeLeft / 60);
+  let secs = activeSubjTimeLeft % 60;
+  const timerClass = activeSubjTimeLeft <= 60 ? 'danger' : activeSubjTimeLeft <= 300 ? 'warning' : '';
+  const view = document.getElementById('view-quiz-take');
+  view.innerHTML = `
+    <div class="page-header"><h2>${esc(test.title)} — Subjective Section</h2></div>
+    <div class="timer-display ${timerClass}" id="subj-timer">⏱ ${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}</div>
+    <div style="font-size:13px;color:var(--text3);text-align:center;margin-bottom:20px;">Complete within ${test.subjDuration||45} minutes • Upload your answer sheet before time ends</div>
+    <div class="card" style="margin-bottom:16px;">
+      <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:12px;">📄 Question Paper</div>
+      <img src="${test.qPaper}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);" alt="Question Paper" />
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:8px;">📸 Upload Your Answer Sheet</div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Take a clear photo of your written answers and upload it below. Make sure all pages are visible.</p>
+      <input type="file" id="subj-answer-file" accept="image/*" multiple style="font-size:13px;" onchange="previewSubjAnswer()" />
+      <div id="subj-answer-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
+    </div>
+    <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:8px;">
+      <button class="btn btn-primary" onclick="submitSubjectiveAnswer(false)">📤 Submit Answer Sheet</button>
+    </div>
+    <p style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center;">⚠️ Your answer will be submitted automatically when time runs out. Your instructor will review and assign marks.</p>
+  `;
+}
+window.renderSubjectiveSection = renderSubjectiveSection;
+
+function previewSubjAnswer() {
+  const input = document.getElementById('subj-answer-file');
+  const preview = document.getElementById('subj-answer-preview');
+  if (!input || !preview) return;
+  preview.innerHTML = '';
+  [...input.files].forEach(file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = document.createElement('img');
+      img.src = e.target.result;
+      img.style.cssText = 'max-width:150px;max-height:150px;border-radius:8px;border:1px solid var(--border);object-fit:cover;';
+      preview.appendChild(img);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+window.previewSubjAnswer = previewSubjAnswer;
+
+async function submitSubjectiveAnswer(timeUp = false) {
+  clearInterval(activeSubjTimer);
+  const tIdx = activeSubjTIdx;
+  const DB = window.DB;
+  const test = (DB.tests || [])[tIdx];
+  if (!test) return;
+  const u = window.currentUser;
+
+  // Collect uploaded images
+  const input = document.getElementById('subj-answer-file');
+  const images = [];
+  if (input && input.files.length) {
+    for (const file of input.files) {
+      const data = await fileToBase64(file);
+      images.push({ data, name: file.name });
+    }
+  }
+
+  const subjResult = {
+    studentId: u.id,
+    studentName: u.name,
+    timestamp: Date.now(),
+    timeUp,
+    images,
+    marks: null, // instructor fills this
+    feedback: ''
+  };
+
+  const updatedTest = { ...test, subjResults: [...(test.subjResults || []), subjResult] };
+  const updatedTests = (DB.tests || []).map((t, i) => i === tIdx ? updatedTest : t);
+  await saveData({ ...DB, tests: updatedTests });
+
+  activeSubjTIdx = null;
+
+  // Show confirmation
+  const view = document.getElementById('view-quiz-take');
+  view.innerHTML = `
+    <div class="page-header"><h2>Test Submitted!</h2></div>
+    <div class="card" style="text-align:center;padding:40px;">
+      <div style="font-size:48px;margin-bottom:16px;">✅</div>
+      <div style="font-size:20px;font-weight:700;color:var(--primary);font-family:'Playfair Display',serif;margin-bottom:8px;">Answer Sheet Submitted</div>
+      <p style="font-size:14px;color:var(--text2);margin-bottom:8px;">${timeUp ? 'Time ran out — your answer was automatically submitted.' : 'Your answer sheet has been submitted successfully.'}</p>
+      <p style="font-size:13px;color:var(--text3);">Your instructor will review your answers and assign marks. Check back later in Tests & Quizzes to see your marks.</p>
+      <button class="btn btn-primary" style="margin-top:24px;" onclick="navTo('tests')">← Back to Tests</button>
+    </div>`;
+}
+window.submitSubjectiveAnswer = submitSubjectiveAnswer;
+
+function viewSubjectiveSubmissions(tIdx) {
+  const test = (window.DB.tests || [])[tIdx];
+  if (!test) return;
+  const subjResults = test.subjResults || [];
+  let html = `<div class="page-header"><h2>${esc(test.title)} — Subjective Submissions</h2><p>${subjResults.length} submission(s) • Click a row to review and assign marks</p></div>`;
+  if (!subjResults.length) {
+    html += `<div class="card"><p style="color:var(--text3);">No subjective submissions yet.</p></div>`;
+  } else {
+    subjResults.forEach((r, rIdx) => {
+      html += `<div class="card" style="margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+          <div>
+            <div style="font-size:15px;font-weight:600;color:var(--primary);">${esc(r.studentName)}</div>
+            <div style="font-size:12px;color:var(--text3);">${fmtDate(r.timestamp)} ${r.timeUp?'• ⏰ Time ran out':''}</div>
+          </div>
+          <span class="badge ${r.marks!=null?'badge-graded':'badge-pending'}">${r.marks!=null?'Marked: '+r.marks+' pts':'Pending Review'}</span>
+        </div>
+        ${r.images && r.images.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+          ${r.images.map((img,ii)=>`<img src="${img.data}" onclick="openImgModal('${img.data}')" style="max-width:160px;max-height:140px;border-radius:8px;border:1px solid var(--border);object-fit:cover;cursor:pointer;" title="Click to enlarge" />`).join('')}
+        </div>` : '<p style="font-size:13px;color:var(--text3);margin-bottom:14px;">No images uploaded.</p>'}
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:12px;">Marks (out of any)</label>
+            <input type="number" id="subj-marks-${tIdx}-${rIdx}" min="0" max="999" value="${r.marks!=null?r.marks:''}" placeholder="Enter marks" style="width:120px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:160px;">
+            <label style="font-size:12px;">Feedback (optional)</label>
+            <input type="text" id="subj-fb-${tIdx}-${rIdx}" value="${esc(r.feedback||'')}" placeholder="Brief feedback…" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:'DM Sans',sans-serif;outline:none;" />
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveSubjectiveMarks(${tIdx},${rIdx})">💾 Save Marks</button>
+        </div>
+      </div>`;
+    });
+  }
+  html += `<button class="btn btn-ghost" style="margin-top:8px;" onclick="navTo('tests')">← Back to Tests</button>`;
+  document.getElementById('view-tests').innerHTML = html;
+}
+window.viewSubjectiveSubmissions = viewSubjectiveSubmissions;
+
+async function saveSubjectiveMarks(tIdx, rIdx) {
+  const DB = window.DB;
+  const test = (DB.tests || [])[tIdx];
+  if (!test) return;
+  const marksVal = document.getElementById(`subj-marks-${tIdx}-${rIdx}`)?.value;
+  const feedback = document.getElementById(`subj-fb-${tIdx}-${rIdx}`)?.value?.trim() || '';
+  if (marksVal === '' || marksVal === null) { toast('Please enter marks.', 'error'); return; }
+  const marks = parseFloat(marksVal);
+  const updatedSubjResults = (test.subjResults || []).map((r, i) => i === rIdx ? {...r, marks, feedback} : r);
+  const updatedTest = { ...test, subjResults: updatedSubjResults };
+  const updatedTests = (DB.tests || []).map((t, i) => i === tIdx ? updatedTest : t);
+  await saveData({ ...DB, tests: updatedTests });
+  toast('Marks saved!', 'success');
+  viewSubjectiveSubmissions(tIdx);
+}
+window.saveSubjectiveMarks = saveSubjectiveMarks;
 
 /* ===== ATTENDANCE ===== */
 function renderAttendance() {
@@ -5053,6 +5329,9 @@ window.renderTests=renderTests;window.renderAttendance=renderAttendance;window.r
 window.showAssignmentReportCard=showAssignmentReportCard;window.printAssignmentReport=printAssignmentReport;
 window.openPaperBuilder=openPaperBuilder;window.closePaperBuilder=closePaperBuilder;window.pbAddPage=pbAddPage;window.pbPrint=pbPrint;
 window.renderQuizTake=renderQuizTake;
+window.viewSubjectiveSubmissions=viewSubjectiveSubmissions;window.saveSubjectiveMarks=saveSubjectiveMarks;
+window.startSubjectiveSection=startSubjectiveSection;window.submitSubjectiveAnswer=submitSubjectiveAnswer;
+window.previewQPaper=previewQPaper;window.previewSubjAnswer=previewSubjAnswer;
 </script>
 <!-- ===== PAPER BUILDER FULLSCREEN ===== -->
 <div id="pb-fullscreen">
