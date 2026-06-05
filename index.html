@@ -717,6 +717,7 @@
     <div id="view-quiz-take" class="hidden"></div>
     <div id="view-discussion" class="hidden"></div>
     <div id="view-leaves" class="hidden"></div>
+    <div id="view-question-papers" class="hidden"></div>
   </div>
 </div>
 
@@ -814,7 +815,8 @@
         attendance: val.attendance || {},
         grades: val.grades || {},
         discussion: val.discussion || { sessions: [], posts: [] },
-        leaves: val.leaves || []
+        leaves: val.leaves || [],
+        questionPapers: val.questionPapers || []
       };
       // Cache DB for instant load next time
       try { localStorage.setItem('ll_db_cache', JSON.stringify(window.DB)); } catch(e) {}
@@ -965,7 +967,7 @@ function defaultData() {
     owner: { email: 'tlearningloft@gmail.com', pass: '8730154731n', name: 'Academy Owner' },
     admins: [], students: [], lectures: [], notes: [], assignments: [],
     announcements: [], courses: [], messages: {}, whiteboard: null,
-    tests: [], attendance: {}, grades: {}, discussion: { sessions: [], posts: [] }, leaves: []
+    tests: [], attendance: {}, grades: {}, discussion: { sessions: [], posts: [] }, leaves: [], questionPapers: []
   };
 }
 window.defaultData = defaultData;
@@ -1343,6 +1345,7 @@ function setupSidebar() {
   html += navItem('tests', testIco(), 'Tests & Quizzes');
   html += navItem('attendance', attendIco(), 'Attendance');
   html += navItem('leaves', `<svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>`, 'Leave Requests');
+  html += navItem('question-papers', `<svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>`, 'Question Papers');
   html += navItem('grades', gradeIco(), 'Grades & Reports');
   html += navItem('whiteboard', wbIco(), 'Whiteboard');
   html += navItem('messages', msgIco(), 'Messages' + (unread > 0 ? ` <span style="background:#ef4444;color:white;border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:4px;">${unread}</span>` : ''));
@@ -1389,7 +1392,8 @@ function renderView(viewName) {
     grades: renderGrades,
     'quiz-take': renderQuizTake,
     discussion: renderDiscussion,
-    leaves: renderLeaves
+    leaves: renderLeaves,
+    'question-papers': renderQuestionPapers
   };
   if (fns[viewName]) fns[viewName]();
 }
@@ -2933,9 +2937,12 @@ function renderMessages() {
           '</div>';
       }).join('') : '<div style="text-align:center;color:var(--text3);font-size:13px;padding:30px 16px;">No messages yet. Say hello!</div>';
       if (bubblesEl) {
-        var wasAtBottom = bubblesEl.scrollHeight - bubblesEl.scrollTop - bubblesEl.clientHeight < 60;
+        var prevCount = bubblesEl.querySelectorAll('.msg-bubble-wrap').length;
+        var wasAtBottom = bubblesEl.scrollHeight - bubblesEl.scrollTop - bubblesEl.clientHeight < 80;
         bubblesEl.innerHTML = bubblesHtml;
-        if (wasAtBottom) bubblesEl.scrollTop = bubblesEl.scrollHeight;
+        var newCount = threadMsgs.length;
+        // Always scroll to bottom when new messages have arrived
+        if (wasAtBottom || newCount > prevCount) bubblesEl.scrollTop = bubblesEl.scrollHeight;
       }
       if (inputEl) inputEl.value = draft;
       markThreadRead(activeThread);
@@ -3618,16 +3625,64 @@ function viewTestResults(tIdx) {
   const results = test.results || [];
   const avg = results.length ? Math.round(results.reduce((s,r)=>s+r.score,0)/results.length) : 0;
   const passed = results.filter(r=>r.passed).length;
-  let html = `<div class="page-header"><h2>${esc(test.title)} — Results</h2><p>${results.length} submissions • Avg: ${avg}% • Passed: ${passed}/${results.length}</p></div>`;
-  if (!results.length) html += `<div class="card"><p style="color:var(--text3);">No submissions yet.</p></div>`;
-  else {
-    html += `<div class="card"><div class="table-wrap"><table><thead><tr><th>Student</th><th>Score</th><th>Points</th><th>Result</th><th>Date</th></tr></thead><tbody>`;
-    results.forEach(r => {
-      html += `<tr><td>${esc(r.studentName)}</td><td><b>${r.score}%</b></td><td>${r.earnedPoints}/${r.totalPoints}</td><td><span class="badge ${r.passed?'badge-graded':'badge-pending'}">${r.passed?'Passed':'Failed'}</span></td><td>${fmtDate(r.timestamp)}</td></tr>`;
+  let html = `<div class="page-header"><h2>${esc(test.title)} — MCQ Results</h2><p>${results.length} submission(s) • Avg: ${avg}% • Passed: ${passed}/${results.length}</p></div>`;
+  if (!results.length) {
+    html += `<div class="card"><p style="color:var(--text3);">No submissions yet.</p></div>`;
+  } else {
+    results.forEach((r, rIdx) => {
+      const fbRows = (r.feedback || []).map((fb, qi) => {
+        const q = (test.questions || [])[qi];
+        if (!q) return '';
+        let answerHtml = '';
+        if (q.type === 'mcq') {
+          answerHtml = (q.options || []).map((opt, oi) => {
+            const isCorrect = oi === q.correctIndex;
+            const isGiven = oi === fb.given && !fb.correct;
+            let bg = isCorrect ? '#e8f5e9' : isGiven ? '#fdecea' : 'transparent';
+            let border = isCorrect ? '2px solid #4caf50' : isGiven ? '2px solid #ef5350' : '1px solid var(--border)';
+            return `<div style="padding:5px 10px;margin-bottom:4px;border-radius:6px;background:${bg};border:${border};font-size:12px;display:flex;align-items:center;gap:6px;">
+              ${isCorrect ? '<span style="color:#2e7d32;font-weight:700;">✓</span>' : isGiven ? '<span style="color:#c62828;font-weight:700;">✗</span>' : '<span style="width:14px;"></span>'}
+              ${esc(opt)}
+            </div>`;
+          }).join('');
+        } else {
+          answerHtml = `<div style="font-size:12px;margin-top:4px;">
+            <span style="color:var(--text3);">Student answered: </span><b style="color:${fb.correct?'#2e7d32':'#c62828'}">${esc(String(fb.given||'—'))}</b>
+            &nbsp;|&nbsp;
+            <span style="color:var(--text3);">Correct: </span><b style="color:#2e7d32">${esc(String(q.correctAnswer||'—'))}</b>
+          </div>`;
+        }
+        return `<div style="padding:10px 12px;border-bottom:1px solid var(--border);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:${fb.correct?'#4caf50':'#ef5350'};color:white;font-size:10px;font-weight:700;flex-shrink:0;">${fb.correct?'✓':'✗'}</span>
+            <span style="font-size:12px;font-weight:600;color:var(--primary);">Q${qi+1}: ${esc(q.text)}</span>
+            <span style="margin-left:auto;font-size:11px;color:${fb.correct?'#2e7d32':'#c62828'};font-weight:700;">${fb.correct?'+'+( q.points||1)+' pts':'0 pts'}</span>
+          </div>
+          ${answerHtml}
+        </div>`;
+      }).join('');
+
+      html += `<div class="card" style="margin-bottom:12px;padding:0;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:14px 16px;cursor:pointer;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:38px;height:38px;border-radius:50%;background:${r.passed?'#4caf50':'#ef5350'};display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:700;flex-shrink:0;">${r.score}%</div>
+            <div>
+              <div style="font-size:14px;font-weight:600;color:var(--primary);">${esc(r.studentName)}</div>
+              <div style="font-size:12px;color:var(--text3);">${r.earnedPoints}/${r.totalPoints} pts · ${fmtDate(r.timestamp)}${r.timeUp?' · ⏰ Time ran out':''}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="badge ${r.passed?'badge-graded':'badge-pending'}">${r.passed?'✅ Passed':'❌ Failed'}</span>
+            <span style="font-size:18px;color:var(--text3);">▾</span>
+          </div>
+        </div>
+        <div style="display:none;border-top:1px solid var(--border);">
+          ${fbRows || '<div style="padding:12px 16px;font-size:13px;color:var(--text3);">No question detail available.</div>'}
+        </div>
+      </div>`;
     });
-    html += `</tbody></table></div></div>`;
   }
-  html += `<button class="btn btn-ghost" style="margin-top:12px;" onclick="navTo('tests')">← Back</button>`;
+  html += `<button class="btn btn-ghost" style="margin-top:12px;" onclick="navTo('tests')">← Back to Tests</button>`;
   document.getElementById('view-tests').innerHTML = html;
 }
 window.viewTestResults = viewTestResults;
@@ -3636,9 +3691,13 @@ function viewMyTestResult(tIdx) {
   const test = (window.DB.tests||[])[tIdx];
   const u = window.currentUser;
   const myResults = (test?.results||[]).filter(r=>r.studentId===u.id);
-  if (!myResults.length) { toast('No results yet.'); return; }
+  if (!myResults.length) { toast('No results found for your account.', 'error'); return; }
   const best = myResults.reduce((a,b)=>a.score>b.score?a:b);
-  viewTestResults(tIdx);
+  // Show full question-by-question breakdown on the quiz-take view
+  document.querySelectorAll('.main-content > div').forEach(el => el.classList.add('hidden'));
+  const view = document.getElementById('view-quiz-take');
+  view.classList.remove('hidden');
+  showMCQResultScreen(test, best.score, best.passed, best.earnedPoints, best.totalPoints, best.feedback || [], best.timeUp || false);
 }
 window.viewMyTestResult = viewMyTestResult;
 
@@ -3674,30 +3733,172 @@ function renderSubjectiveSection() {
   if (tIdx === null) return;
   const test = (window.DB.tests || [])[tIdx];
   if (!test) return;
+  const u = window.currentUser;
   let mins = Math.floor(activeSubjTimeLeft / 60);
   let secs = activeSubjTimeLeft % 60;
   const timerClass = activeSubjTimeLeft <= 60 ? 'danger' : activeSubjTimeLeft <= 300 ? 'warning' : '';
+  const today = new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
   const view = document.getElementById('view-quiz-take');
   view.innerHTML = `
     <div class="page-header"><h2>${esc(test.title)} — Subjective Section</h2></div>
     <div class="timer-display ${timerClass}" id="subj-timer">⏱ ${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}</div>
-    <div style="font-size:13px;color:var(--text3);text-align:center;margin-bottom:20px;">Complete within ${test.subjDuration||45} minutes • Upload your answer sheet before time ends</div>
+    <div style="font-size:13px;color:var(--text3);text-align:center;margin-bottom:20px;">Complete within ${test.subjDuration||45} minutes • Submit your answers before time ends</div>
+
+    <!-- Question Paper -->
     <div class="card" style="margin-bottom:16px;">
       <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:12px;">📄 Question Paper</div>
       <img src="${test.qPaper}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);" alt="Question Paper" />
     </div>
+
+    <!-- Digital Answer Sheet -->
+    <div class="card" style="margin-bottom:16px;border:2px solid var(--accent);border-radius:14px;padding:0;overflow:hidden;">
+      <!-- Sheet Header -->
+      <div style="background:linear-gradient(135deg,var(--primary) 0%,#1e5a8a 100%);padding:18px 20px;color:white;">
+        <div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700;margin-bottom:4px;">📝 Answer Sheet</div>
+        <div style="font-size:12px;opacity:.85;">${esc(test.title)}</div>
+      </div>
+      <!-- Student Info Bar -->
+      <div style="background:#f0f4f8;padding:14px 20px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
+        <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:220px;">
+          <span style="font-size:12px;font-weight:600;color:var(--primary);white-space:nowrap;">Student Name:</span>
+          <div style="position:relative;flex:1;">
+            <input id="subj-student-name" type="text" value="${esc(u.name)}"
+              style="width:100%;padding:7px 32px 7px 10px;border:1.5px solid var(--accent);border-radius:8px;font-size:13px;font-weight:600;color:var(--primary);background:white;font-family:'DM Sans',sans-serif;box-sizing:border-box;outline:none;"
+              placeholder="Your full name" />
+            <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:13px;cursor:pointer;color:var(--accent);" title="Edit name" onclick="document.getElementById('subj-student-name').focus()">✏️</span>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text3);white-space:nowrap;">📅 ${today}</div>
+      </div>
+      <!-- Answer Rows -->
+      <div style="padding:18px 20px;" id="subj-answers-area">
+        ${[1,2,3,4,5,6,7,8,9,10].map(n => `
+        <div style="margin-bottom:18px;" id="subj-q-row-${n}">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--primary);color:white;font-size:12px;font-weight:700;flex-shrink:0;">Q${n}</span>
+            <span style="font-size:13px;font-weight:700;color:#1a5fa0;">Question ${n}</span>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:8px;">
+            <span style="font-size:12px;font-weight:700;color:var(--accent);margin-top:10px;flex-shrink:0;min-width:48px;">Answer:</span>
+            <textarea id="subj-ans-${n}" rows="3"
+              style="flex:1;padding:9px 12px;border:1.5px solid #d1e3f5;border-radius:8px;font-size:13px;color:#1a3a4a;font-family:'DM Sans',sans-serif;resize:vertical;outline:none;background:#fafcff;line-height:1.6;transition:border .15s;"
+              placeholder="Write your answer here…"
+              onfocus="this.style.border='1.5px solid var(--accent)'"
+              onblur="this.style.border='1.5px solid #d1e3f5'"></textarea>
+          </div>
+        </div>`).join('')}
+        <div style="text-align:center;margin-top:4px;">
+          <button class="btn btn-ghost btn-sm" onclick="subjAddMoreRows()" style="font-size:12px;">＋ Add More Answer Rows</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload from Gallery -->
     <div class="card" style="margin-bottom:16px;">
-      <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:8px;">📸 Upload Your Answer Sheet</div>
-      <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Take a clear photo of your written answers and upload it below. Make sure all pages are visible.</p>
-      <input type="file" id="subj-answer-file" accept="image/*" multiple style="font-size:13px;" onchange="previewSubjAnswer()" />
-      <div id="subj-answer-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
+      <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:10px;">📸 Upload Handwritten Answer Sheet</div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Take a photo of your written answer sheet or choose from your gallery. Both digital answers above and uploaded photos are submitted together.</p>
+      <input type="file" id="subj-answer-file" accept="image/*" multiple style="display:none;" onchange="previewSubjAnswer()" />
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+        <label for="subj-answer-file" style="display:inline-flex;align-items:center;gap:8px;padding:12px 20px;background:linear-gradient(135deg,var(--accent) 0%,#c8834a 100%);color:white;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;font-family:'DM Sans',sans-serif;box-shadow:0 2px 8px rgba(232,168,124,.35);transition:opacity .15s;" onmouseover="this.style.opacity='.88'" onmouseout="this.style.opacity='1'">
+          <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+          📂 Choose from Gallery
+        </label>
+        <label for="subj-answer-file" style="display:inline-flex;align-items:center;gap:8px;padding:12px 20px;background:linear-gradient(135deg,var(--primary) 0%,#1e5a8a 100%);color:white;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;font-family:'DM Sans',sans-serif;box-shadow:0 2px 8px rgba(26,58,74,.3);transition:opacity .15s;" onclick="document.getElementById('subj-answer-file').setAttribute('capture','camera')" onmouseover="this.style.opacity='.88'" onmouseout="this.style.opacity='1'">
+          <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M12 15.2A3.2 3.2 0 0 1 8.8 12 3.2 3.2 0 0 1 12 8.8 3.2 3.2 0 0 1 15.2 12 3.2 3.2 0 0 1 12 15.2M20 4h-3.17L15 2H9L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2z"/></svg>
+          📷 Use Camera
+        </label>
+        <button class="btn btn-ghost" style="font-size:13px;" onclick="printAnswerSheet(${tIdx})">🖨 Print Blank Sheet</button>
+      </div>
+      <div id="subj-answer-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;"></div>
     </div>
+
     <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:8px;">
-      <button class="btn btn-primary" onclick="submitSubjectiveAnswer(false)">📤 Submit Answer Sheet</button>
+      <button class="btn btn-primary" style="padding:13px 28px;font-size:15px;" onclick="submitSubjectiveAnswer(false)">📤 Submit Answer Sheet</button>
     </div>
-    <p style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center;">⚠️ Your answer will be submitted automatically when time runs out. Your instructor will review and assign marks.</p>
+    <p style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center;">⚠️ Your answers will be submitted automatically when time runs out. Your instructor will review and assign marks.</p>
   `;
 }
+
+function printAnswerSheet(tIdx) {
+  const test = (window.DB.tests||[])[tIdx] || {};
+  const u = window.currentUser;
+  const today = new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  const rows = Array.from({length:15},(_,i)=>i+1).map(n=>`
+    <div style="margin-bottom:22px;page-break-inside:avoid;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#1a3a4a;color:white;font-size:12px;font-weight:700;flex-shrink:0;">Q${n}</span>
+        <span style="font-weight:700;color:#1a5fa0;font-size:14px;">Question ${n}</span>
+      </div>
+      <div style="margin-left:38px;">
+        <span style="font-size:13px;font-weight:700;color:#e8a87c;">Answer: </span>
+        <div style="height:28px;border-bottom:1.5px solid #b0c8e0;margin-top:6px;"></div>
+        <div style="height:28px;border-bottom:1px solid #d6e8f5;margin-top:0;"></div>
+        <div style="height:28px;border-bottom:1px solid #d6e8f5;margin-top:0;"></div>
+      </div>
+    </div>`).join('');
+  const win = window.open('','_blank','width=800,height=900');
+  if (!win) { toast('Please allow popups to print.','error'); return; }
+  win.document.write(`<!DOCTYPE html><html><head>
+    <meta charset="utf-8"/>
+    <title>Answer Sheet — ${esc(test.title||'Test')}</title>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;600;700&display=swap');
+      *{box-sizing:border-box;margin:0;padding:0;}
+      body{font-family:'DM Sans',Arial,sans-serif;margin:0;padding:28px 40px;color:#1a1a1a;background:white;}
+      .header{border:2px solid #1a3a4a;border-radius:12px;padding:16px 20px;margin-bottom:24px;}
+      .title{font-family:'Playfair Display',Georgia,serif;font-size:22px;font-weight:700;color:#1a3a4a;margin-bottom:12px;}
+      .info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+      .info-box{border:1px solid #b0c8e0;border-radius:8px;padding:8px 12px;}
+      .info-label{font-size:10px;font-weight:700;color:#1a5fa0;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px;}
+      .info-val{font-size:13px;font-weight:600;color:#1a3a4a;border-bottom:1px solid #999;min-height:22px;padding-bottom:2px;}
+      .instructions{background:#f5f8fc;border-left:4px solid #e8a87c;border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:20px;font-size:12px;color:#555;line-height:1.6;}
+      @media print{body{padding:16px 24px;}@page{margin:1cm;}}
+    </style>
+  </head><body>
+    <div class="header">
+      <div class="title">📝 Answer Sheet</div>
+      <div class="info-grid">
+        <div class="info-box"><div class="info-label">Test / Exam</div><div class="info-val">${esc(test.title||'')}</div></div>
+        <div class="info-box"><div class="info-label">Student Name</div><div class="info-val">${esc(u.name)}</div></div>
+        <div class="info-box"><div class="info-label">Date</div><div class="info-val">${today}</div></div>
+      </div>
+    </div>
+    <div class="instructions">✏️ Write your answers clearly in the lines below each question number. Submit the completed sheet to your teacher or upload a clear photo through the portal.</div>
+    ${rows}
+    <div style="text-align:center;margin-top:28px;border-top:1px solid #ccc;padding-top:14px;font-size:11px;color:#888;">The Learning Loft · Student Answer Sheet</div>
+    <script>window.onload=function(){window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
+}
+window.printAnswerSheet = printAnswerSheet;
+
+let _subjExtraRows = 10;
+function subjAddMoreRows() {
+  const area = document.getElementById('subj-answers-area');
+  if (!area) return;
+  const addBtn = area.querySelector('div[style*="text-align:center"]');
+  for (let n = _subjExtraRows + 1; n <= _subjExtraRows + 5; n++) {
+    const div = document.createElement('div');
+    div.style.marginBottom = '18px';
+    div.id = 'subj-q-row-' + n;
+    div.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--primary);color:white;font-size:12px;font-weight:700;flex-shrink:0;">Q${n}</span>
+        <span style="font-size:13px;font-weight:700;color:#1a5fa0;">Question ${n}</span>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:8px;">
+        <span style="font-size:12px;font-weight:700;color:var(--accent);margin-top:10px;flex-shrink:0;min-width:48px;">Answer:</span>
+        <textarea id="subj-ans-${n}" rows="3"
+          style="flex:1;padding:9px 12px;border:1.5px solid #d1e3f5;border-radius:8px;font-size:13px;color:#1a3a4a;font-family:'DM Sans',sans-serif;resize:vertical;outline:none;background:#fafcff;line-height:1.6;transition:border .15s;"
+          placeholder="Write your answer here…"
+          onfocus="this.style.border='1.5px solid var(--accent)'"
+          onblur="this.style.border='1.5px solid #d1e3f5'"></textarea>
+      </div>`;
+    if (addBtn) area.insertBefore(div, addBtn); else area.appendChild(div);
+  }
+  _subjExtraRows += 5;
+}
+window.subjAddMoreRows = subjAddMoreRows;
 window.renderSubjectiveSection = renderSubjectiveSection;
 
 function previewSubjAnswer() {
@@ -3726,6 +3927,20 @@ async function submitSubjectiveAnswer(timeUp = false) {
   if (!test) return;
   const u = window.currentUser;
 
+  // Use editable name from the answer sheet if available, else fall back to account name
+  const nameEl = document.getElementById('subj-student-name');
+  const submittedName = (nameEl && nameEl.value.trim()) ? nameEl.value.trim() : u.name;
+
+  // Collect typed text answers from the digital answer sheet
+  const typedAnswers = [];
+  let rowIdx = 1;
+  while (document.getElementById('subj-ans-' + rowIdx)) {
+    const el = document.getElementById('subj-ans-' + rowIdx);
+    const val = el ? el.value.trim() : '';
+    if (val) typedAnswers.push({ question: rowIdx, answer: val });
+    rowIdx++;
+  }
+
   // Collect uploaded images
   const input = document.getElementById('subj-answer-file');
   const images = [];
@@ -3736,11 +3951,17 @@ async function submitSubjectiveAnswer(timeUp = false) {
     }
   }
 
+  if (!typedAnswers.length && !images.length && !timeUp) {
+    toast('Please write at least one answer or upload a photo before submitting.', 'error');
+    return;
+  }
+
   const subjResult = {
     studentId: u.id,
-    studentName: u.name,
+    studentName: submittedName,
     timestamp: Date.now(),
     timeUp,
+    typedAnswers,
     images,
     marks: null, // instructor fills this
     feedback: ''
@@ -3783,9 +4004,19 @@ function viewSubjectiveSubmissions(tIdx) {
           </div>
           <span class="badge ${r.marks!=null?'badge-graded':'badge-pending'}">${r.marks!=null?'Marked: '+r.marks+' pts':'Pending Review'}</span>
         </div>
+        ${r.typedAnswers && r.typedAnswers.length ? `
+        <div style="background:#f5f8fc;border:1px solid #d1e3f5;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--primary);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;">📝 Digital Answers</div>
+          ${r.typedAnswers.map(a=>`
+          <div style="margin-bottom:10px;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--primary);color:white;font-size:11px;font-weight:700;margin-right:8px;flex-shrink:0;">Q${a.question}</span>
+            <span style="font-size:12px;font-weight:700;color:#1a5fa0;">Question ${a.question}:</span>
+            <div style="margin-top:5px;padding:8px 12px;background:white;border-left:3px solid var(--accent);border-radius:0 6px 6px 0;font-size:13px;color:#1a3a4a;line-height:1.6;">${esc(a.answer)}</div>
+          </div>`).join('')}
+        </div>` : ''}
         ${r.images && r.images.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
           ${r.images.map((img,ii)=>`<img src="${img.data}" onclick="openImgModal('${img.data}')" style="max-width:160px;max-height:140px;border-radius:8px;border:1px solid var(--border);object-fit:cover;cursor:pointer;" title="Click to enlarge" />`).join('')}
-        </div>` : '<p style="font-size:13px;color:var(--text3);margin-bottom:14px;">No images uploaded.</p>'}
+        </div>` : (!r.typedAnswers || !r.typedAnswers.length ? '<p style="font-size:13px;color:var(--text3);margin-bottom:14px;">No answers submitted.</p>' : '')}
         <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
           <div class="form-group" style="margin-bottom:0;">
             <label style="font-size:12px;">Marks (out of any)</label>
@@ -5148,6 +5379,305 @@ window.sendSessionChat=sendSessionChat;window.deleteSessionChat=deleteSessionCha
 window.editAttendDay=editAttendDay;window.saveEditAttendance=saveEditAttendance;
 window.deleteAttendDay=deleteAttendDay;window.setEditAttend=setEditAttend;
 window.setLoginTab=setLoginTab;window.doLogin=doLogin;window.doLogout=doLogout;
+
+/* ===== QUESTION PAPERS ===== */
+function renderQuestionPapers() {
+  const DB = window.DB;
+  const u = window.currentUser;
+  const isAdmin = u.role === 'owner' || u.role === 'admin';
+  const papers = DB.questionPapers || [];
+
+  let html = `<div class="page-header">
+    <h2>📄 Question Papers</h2>
+    <p>${isAdmin ? 'Upload question papers and mark student answer submissions.' : 'View question papers and submit your handwritten answer screenshots.'}</p>
+  </div>`;
+
+  if (isAdmin) {
+    html += `<div class="card" style="margin-bottom:20px;">
+      <div class="section-header"><h3>+ Upload New Question Paper</h3></div>
+      <div id="qp-create-err" class="error-msg"></div>
+      <div class="form-group"><label>Paper Title</label><input type="text" id="qp-title" placeholder="e.g. Mathematics Mid-Term 2026"/></div>
+      <div class="form-group"><label>Instructions / Description</label><textarea id="qp-desc" placeholder="Instructions for students…"></textarea></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:140px;"><label>Due Date</label><input type="text" id="qp-due" placeholder="e.g. Jun 20, 2026"/></div>
+        <div class="form-group" style="flex:1;min-width:140px;"><label>Total Marks</label><input type="number" id="qp-marks" value="100" min="1" max="1000"/></div>
+      </div>
+      <div class="form-group">
+        <label>Question Paper Images (upload one or more scanned pages)</label>
+        <input type="file" id="qp-imgs" accept="image/*" multiple onchange="previewQPImages()" style="font-size:13px;"/>
+        <div id="qp-img-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>
+      </div>
+      <button class="btn btn-primary" onclick="submitCreateQP()">📤 Publish Question Paper</button>
+    </div>`;
+  }
+
+  if (!papers.length) {
+    html += `<div class="card"><p style="color:var(--text3);font-size:14px;">No question papers published yet.</p></div>`;
+  } else {
+    papers.forEach((p, pIdx) => {
+      const mySub = isAdmin ? null : (p.submissions || []).find(s => s.studentId === u.id);
+      const totalSubs = (p.submissions || []).length;
+      const gradedSubs = (p.submissions || []).filter(s => s.marks !== null && s.marks !== undefined && s.marks !== '').length;
+      const isPastDue = p.dueDate && !isNaN(new Date(p.dueDate).getTime()) && new Date() > new Date(p.dueDate);
+
+      html += `<div class="card" style="margin-bottom:16px;">
+        <div class="section-header" style="flex-wrap:wrap;gap:10px;">
+          <div>
+            <h3 style="font-family:'Playfair Display',serif;font-size:18px;color:var(--primary);">📄 ${esc(p.title)}</h3>
+            <div style="font-size:12px;color:var(--text3);margin-top:4px;">
+              Due: <strong>${esc(p.dueDate || 'No deadline')}</strong> · Total Marks: <strong>${p.totalMarks || 100}</strong>
+              ${isPastDue ? '<span style="background:#fee2e2;color:var(--danger);font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;">CLOSED</span>' : '<span style="background:#e8f5e9;color:var(--success);font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;">OPEN</span>'}
+            </div>
+          </div>
+          ${isAdmin ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+            <span style="font-size:12px;color:var(--text3);">${gradedSubs}/${totalSubs} marked</span>
+            <button class="btn btn-ghost btn-sm" onclick="viewQPSubmissions(${pIdx})">📝 Submissions (${totalSubs})</button>
+            ${u.role === 'owner' ? `<button class="btn btn-danger btn-sm" onclick="deleteQP(${pIdx})">🗑 Delete</button>` : ''}
+          </div>` : `<span class="badge ${mySub ? (mySub.marks !== null && mySub.marks !== undefined && mySub.marks !== '' ? 'badge-graded' : 'badge-submitted') : 'badge-pending'}">${mySub ? (mySub.marks !== null && mySub.marks !== undefined && mySub.marks !== '' ? '✅ Marked: ' + mySub.marks + ' / ' + (p.totalMarks || 100) : '📤 Submitted') : '⏳ Pending'}</span>`}
+        </div>
+
+        ${p.desc ? `<p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.6;">${esc(p.desc)}</p>` : ''}
+
+        ${p.images && p.images.length ? `
+        <div style="margin-bottom:16px;">
+          <div style="font-size:12px;font-weight:700;color:var(--primary);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;">📋 Question Paper (${p.images.length} page${p.images.length > 1 ? 's' : ''})</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;">
+            ${p.images.map((img, ii) => `
+              <div style="position:relative;cursor:pointer;" onclick="openImgModal('${img.data}')">
+                <img src="${img.data}" style="max-width:180px;max-height:220px;border-radius:10px;border:2px solid var(--border);object-fit:cover;box-shadow:0 2px 8px rgba(0,0,0,.1);" alt="Page ${ii+1}"/>
+                <div style="position:absolute;bottom:6px;left:6px;background:rgba(26,58,74,.8);color:white;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;">Pg ${ii+1}</div>
+                <div style="position:absolute;top:6px;right:6px;background:rgba(26,58,74,.7);color:white;font-size:10px;padding:2px 6px;border-radius:6px;">🔍 Enlarge</div>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+        ${!isAdmin ? `
+        <div style="background:var(--bg);border:1.5px solid var(--border);border-radius:10px;padding:18px 20px;">
+          ${mySub ? `
+            <div style="font-size:13px;font-weight:600;color:var(--success);margin-bottom:10px;">✅ Answer Submitted</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+              ${(mySub.images || []).map(img => `<img src="${img.data}" onclick="openImgModal('${img.data}')" style="max-width:120px;max-height:100px;border-radius:8px;border:1px solid var(--border);object-fit:cover;cursor:pointer;" />`).join('')}
+            </div>
+            ${mySub.text ? `<div style="font-size:13px;color:var(--text2);margin-bottom:8px;"><strong>Note:</strong> ${esc(mySub.text)}</div>` : ''}
+            ${mySub.marks !== null && mySub.marks !== undefined && mySub.marks !== '' ? `
+              <div style="background:linear-gradient(120deg,#e8f5e9,#c8e6c9);border:1px solid #a5d6a7;border-radius:10px;padding:14px 18px;margin-top:10px;">
+                <div style="font-size:14px;font-weight:700;color:var(--success);">🏆 Marks: ${mySub.marks} / ${p.totalMarks || 100}</div>
+                ${mySub.feedback ? `<div style="font-size:13px;color:var(--text2);margin-top:6px;">💬 Feedback: ${esc(mySub.feedback)}</div>` : ''}
+              </div>` : '<div style="font-size:12px;color:var(--text3);margin-top:6px;">⏳ Awaiting marks from teacher.</div>'}
+          ` : isPastDue ? `
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-size:22px;">⏰</span>
+              <div><strong style="color:var(--danger);">Submission Closed</strong><br><span style="font-size:12px;color:var(--text3);">Deadline has passed. Contact your teacher.</span></div>
+            </div>
+          ` : `
+            <div style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:12px;">📸 Upload Your Answer Sheets</div>
+            <p style="font-size:12px;color:var(--text3);margin-bottom:12px;">Take clear photos or screenshots of your written answers and upload them below. You can select multiple images at once.</p>
+            <div class="form-group" style="margin-bottom:10px;">
+              <label style="font-size:12px;font-weight:600;">Answer Images (select from gallery — multiple allowed)</label>
+              <input type="file" id="qp-ans-${pIdx}" accept="image/*" multiple onchange="previewQPAnswer(${pIdx})" style="font-size:13px;"/>
+              <div id="qp-ans-preview-${pIdx}" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
+            </div>
+            <div class="form-group" style="margin-bottom:12px;">
+              <label style="font-size:12px;font-weight:600;">Additional Note (optional)</label>
+              <textarea id="qp-ans-text-${pIdx}" placeholder="Any notes for your teacher…" style="min-height:50px;font-size:13px;"></textarea>
+            </div>
+            <button class="btn btn-primary" onclick="submitQPAnswer(${pIdx})">📤 Submit Answers</button>
+          `}
+        </div>` : ''}
+      </div>`;
+    });
+  }
+
+  document.getElementById('view-question-papers').innerHTML = html;
+}
+window.renderQuestionPapers = renderQuestionPapers;
+
+function previewQPImages() {
+  const fileEl = document.getElementById('qp-imgs');
+  const previewEl = document.getElementById('qp-img-preview');
+  if (!fileEl || !previewEl || !fileEl.files.length) { if (previewEl) previewEl.innerHTML = ''; return; }
+  previewEl.innerHTML = Array.from(fileEl.files).map(f =>
+    `<img src="${URL.createObjectURL(f)}" style="max-width:120px;max-height:100px;border-radius:8px;border:1px solid var(--border);object-fit:cover;"/>`
+  ).join('');
+}
+window.previewQPImages = previewQPImages;
+
+function previewQPAnswer(pIdx) {
+  const fileEl = document.getElementById(`qp-ans-${pIdx}`);
+  const previewEl = document.getElementById(`qp-ans-preview-${pIdx}`);
+  if (!fileEl || !previewEl || !fileEl.files.length) { if (previewEl) previewEl.innerHTML = ''; return; }
+  previewEl.innerHTML = Array.from(fileEl.files).map(f =>
+    `<div style="position:relative;display:inline-block;">
+      <img src="${URL.createObjectURL(f)}" style="max-width:110px;max-height:90px;border-radius:8px;border:2px solid var(--accent);object-fit:cover;"/>
+    </div>`
+  ).join('');
+}
+window.previewQPAnswer = previewQPAnswer;
+
+async function submitCreateQP() {
+  const title = v('qp-title'), desc = v('qp-desc'), dueDate = v('qp-due');
+  const totalMarks = parseInt(document.getElementById('qp-marks')?.value) || 100;
+  const errEl = document.getElementById('qp-create-err');
+  if (errEl) { errEl.textContent = ''; errEl.classList.remove('show'); }
+  if (!title) { if (errEl) { errEl.textContent = 'Title is required.'; errEl.classList.add('show'); } return; }
+  const imgEl = document.getElementById('qp-imgs');
+  if (!imgEl || !imgEl.files.length) { if (errEl) { errEl.textContent = 'Please upload at least one question paper image.'; errEl.classList.add('show'); } return; }
+  const images = [];
+  for (const file of imgEl.files) {
+    const data = await fileToBase64(file);
+    images.push({ data, name: file.name });
+  }
+  const paper = { title, desc, dueDate, totalMarks, images, timestamp: Date.now(), createdBy: window.currentUser.name, submissions: [] };
+  const DB = window.DB;
+  const next = { ...DB, questionPapers: [...(DB.questionPapers || []), paper] };
+  await saveData(next);
+  toast('Question paper published!', 'success');
+  renderQuestionPapers();
+}
+window.submitCreateQP = submitCreateQP;
+
+async function submitQPAnswer(pIdx) {
+  const u = window.currentUser;
+  const DB = window.DB;
+  const paper = (DB.questionPapers || [])[pIdx];
+  if (!paper) return;
+  if (paper.dueDate && !isNaN(new Date(paper.dueDate).getTime()) && new Date() > new Date(paper.dueDate)) {
+    toast('Deadline has passed.', 'error'); return;
+  }
+  const existing = (paper.submissions || []).find(s => s.studentId === u.id);
+  if (existing) { toast('You have already submitted answers for this paper.', 'error'); return; }
+  const fileEl = document.getElementById(`qp-ans-${pIdx}`);
+  const textEl = document.getElementById(`qp-ans-text-${pIdx}`);
+  const text = textEl ? textEl.value.trim() : '';
+  if (!fileEl || !fileEl.files.length) { toast('Please select at least one answer image.', 'error'); return; }
+  const images = [];
+  for (const file of fileEl.files) {
+    const data = await fileToBase64(file);
+    images.push({ data, name: file.name });
+  }
+  const sub = { studentId: u.id, studentName: u.name, images, text, timestamp: Date.now(), marks: null, feedback: '' };
+  const updatedPaper = { ...paper, submissions: [...(paper.submissions || []), sub] };
+  const updatedPapers = (DB.questionPapers || []).map((p, i) => i === pIdx ? updatedPaper : p);
+  await saveData({ ...DB, questionPapers: updatedPapers });
+  toast('Answers submitted successfully! ✅', 'success');
+  renderQuestionPapers();
+}
+window.submitQPAnswer = submitQPAnswer;
+
+function viewQPSubmissions(pIdx) {
+  const DB = window.DB;
+  const paper = (DB.questionPapers || [])[pIdx];
+  if (!paper) return;
+  const subs = paper.submissions || [];
+
+  let html = `<div class="page-header" style="margin-bottom:16px;">
+    <h2>📝 Submissions — ${esc(paper.title)}</h2>
+    <p>${subs.length} student${subs.length !== 1 ? 's' : ''} submitted · Total Marks: ${paper.totalMarks || 100}</p>
+  </div>`;
+
+  if (!subs.length) {
+    html += `<div class="card"><p style="color:var(--text3);">No submissions yet.</p></div>`;
+  } else {
+    subs.forEach((r, rIdx) => {
+      const isMarked = r.marks !== null && r.marks !== undefined && r.marks !== '';
+      html += `<div class="card" style="margin-bottom:16px;border-left:4px solid ${isMarked ? 'var(--success)' : 'var(--border)'};">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+          <div>
+            <div style="font-size:15px;font-weight:700;color:var(--primary);">${esc(r.studentName)}</div>
+            <div style="font-size:12px;color:var(--text3);">ID: ${esc(r.studentId)} · Submitted ${fmtDate(r.timestamp)}</div>
+          </div>
+          <span class="badge ${isMarked ? 'badge-graded' : 'badge-pending'}">${isMarked ? '✅ Marked: ' + r.marks + ' pts' : '⏳ Pending'}</span>
+        </div>
+
+        ${r.images && r.images.length ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--primary);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;">📸 Answer Sheets (${r.images.length})</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;">
+            ${r.images.map((img, ii) => `
+              <div style="position:relative;cursor:pointer;" onclick="openImgModal('${img.data}')">
+                <img src="${img.data}" style="max-width:170px;max-height:200px;border-radius:10px;border:1.5px solid var(--border);object-fit:cover;box-shadow:0 2px 8px rgba(0,0,0,.1);" title="Click to enlarge"/>
+                <div style="position:absolute;bottom:5px;left:5px;background:rgba(26,58,74,.75);color:white;font-size:10px;padding:1px 6px;border-radius:20px;">Sheet ${ii+1}</div>
+                <div style="position:absolute;top:5px;right:5px;background:rgba(26,58,74,.7);color:white;font-size:10px;padding:1px 5px;border-radius:5px;">🔍</div>
+              </div>`).join('')}
+          </div>
+        </div>` : '<p style="font-size:13px;color:var(--text3);margin-bottom:12px;">No images submitted.</p>'}
+
+        ${r.text ? `<div style="background:#f5f8fc;border:1px solid #d1e3f5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--text2);">📝 Note: ${esc(r.text)}</div>` : ''}
+
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;background:var(--bg);border-radius:10px;padding:14px 16px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:12px;font-weight:600;">Marks (out of ${paper.totalMarks || 100})</label>
+            <input type="number" id="qp-marks-${pIdx}-${rIdx}" min="0" max="${paper.totalMarks || 100}" step="0.5"
+              value="${isMarked ? r.marks : ''}" placeholder="Enter marks"
+              style="width:130px;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:16px;font-weight:700;font-family:'DM Sans',sans-serif;outline:none;"
+              oninput="updateQPMarkPreview(${pIdx},${rIdx},${paper.totalMarks || 100})"/>
+          </div>
+          <div id="qp-mark-preview-${pIdx}-${rIdx}" style="padding-bottom:4px;min-width:80px;"></div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:160px;">
+            <label style="font-size:12px;font-weight:600;">Feedback (optional)</label>
+            <input type="text" id="qp-fb-${pIdx}-${rIdx}" value="${esc(r.feedback || '')}" placeholder="e.g. Good work, but needs more detail…"
+              style="width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:'DM Sans',sans-serif;outline:none;"/>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveQPMarks(${pIdx},${rIdx})">💾 Save Marks</button>
+        </div>
+      </div>`;
+    });
+  }
+
+  html += `<button class="btn btn-ghost" style="margin-top:8px;" onclick="navTo('question-papers')">← Back to Papers</button>`;
+  document.getElementById('view-question-papers').innerHTML = html;
+
+  setTimeout(() => {
+    subs.forEach((r, rIdx) => {
+      if (r.marks !== null && r.marks !== undefined && r.marks !== '') {
+        updateQPMarkPreview(pIdx, rIdx, paper.totalMarks || 100);
+      }
+    });
+  }, 50);
+}
+window.viewQPSubmissions = viewQPSubmissions;
+
+function updateQPMarkPreview(pIdx, rIdx, totalMarks) {
+  const inp = document.getElementById(`qp-marks-${pIdx}-${rIdx}`);
+  const preview = document.getElementById(`qp-mark-preview-${pIdx}-${rIdx}`);
+  if (!inp || !preview) return;
+  const val = parseFloat(inp.value);
+  if (isNaN(val) || val < 0) { preview.innerHTML = ''; return; }
+  const pct = Math.round((val / totalMarks) * 100);
+  const letter = pct >= 90 ? 'A+' : pct >= 85 ? 'A' : pct >= 80 ? 'A-' : pct >= 75 ? 'B+' : pct >= 70 ? 'B' : pct >= 65 ? 'B-' : pct >= 60 ? 'C+' : pct >= 55 ? 'C' : pct >= 50 ? 'C-' : pct >= 45 ? 'D' : 'F';
+  const color = letter.startsWith('A') ? 'var(--success)' : letter.startsWith('B') ? '#1a8fc4' : letter.startsWith('C') ? '#c47a1a' : 'var(--danger)';
+  preview.innerHTML = `<span style="font-size:24px;font-weight:700;font-family:'Playfair Display',serif;color:${color};">${letter}</span> <span style="font-size:12px;color:var(--text3);">${pct}%</span>`;
+}
+window.updateQPMarkPreview = updateQPMarkPreview;
+
+async function saveQPMarks(pIdx, rIdx) {
+  const DB = window.DB;
+  const paper = (DB.questionPapers || [])[pIdx];
+  if (!paper) return;
+  const marksVal = document.getElementById(`qp-marks-${pIdx}-${rIdx}`)?.value;
+  const feedback = document.getElementById(`qp-fb-${pIdx}-${rIdx}`)?.value?.trim() || '';
+  if (marksVal === '' || marksVal === null || marksVal === undefined) { toast('Please enter marks.', 'error'); return; }
+  const marks = parseFloat(marksVal);
+  if (isNaN(marks) || marks < 0) { toast('Please enter a valid number.', 'error'); return; }
+  const updatedSubs = (paper.submissions || []).map((s, i) => i === rIdx ? { ...s, marks, feedback, markedAt: Date.now(), markedBy: window.currentUser.name } : s);
+  const updatedPaper = { ...paper, submissions: updatedSubs };
+  const updatedPapers = (DB.questionPapers || []).map((p, i) => i === pIdx ? updatedPaper : p);
+  await saveData({ ...DB, questionPapers: updatedPapers });
+  toast('Marks saved! ✅', 'success');
+  viewQPSubmissions(pIdx);
+}
+window.saveQPMarks = saveQPMarks;
+
+async function deleteQP(pIdx) {
+  if (window.currentUser.role !== 'owner') { toast('Only the owner can delete question papers.', 'error'); return; }
+  if (!confirm('Delete this question paper and all submissions?')) return;
+  const DB = window.DB;
+  const updatedPapers = (DB.questionPapers || []).filter((_, i) => i !== pIdx);
+  await saveData({ ...DB, questionPapers: updatedPapers });
+  toast('Question paper deleted.', 'success');
+  renderQuestionPapers();
+}
+window.deleteQP = deleteQP;
 
 /* ===== LEAVE REQUESTS ===== */
 function leaveStatusBadge(status) {
