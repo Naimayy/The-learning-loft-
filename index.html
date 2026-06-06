@@ -3261,11 +3261,18 @@ function renderTests() {
         </div>
         ${t.desc ? `<p style="font-size:13px;color:var(--text2);margin-bottom:10px;">${esc(t.desc)}</p>` : ''}
         <div class="test-actions">
-          ${!isAdmin && attemptsLeft > 0 ? `<button class="btn btn-primary btn-sm" onclick="startTest(${tIdx})">▶ Start Test</button>` : ''}
+          ${!isAdmin && attemptsLeft > 0 && (t.questions||[]).length && !mySubjResult ? `<button class="btn btn-primary btn-sm" onclick="startTest(${tIdx})">▶ Start Test</button>` : ''}
+          ${!isAdmin && attemptsLeft > 0 && !(t.questions||[]).length && t.qPaper && !mySubjResult ? `<button class="btn btn-primary btn-sm" onclick="startSubjectiveFlow(${tIdx})">📝 Start Subjective Test</button>` : ''}
+          ${!isAdmin && myResults.length > 0 && t.qPaper && !mySubjResult ? `<button class="btn btn-accent btn-sm" onclick="startSubjectiveFlow(${tIdx})">📝 Start Subjective Section</button>` : ''}
           ${!isAdmin && myResults.length > 0 ? `<button class="btn btn-ghost btn-sm" onclick="viewMyTestResult(${tIdx})">📄 MCQ Result (Best: ${bestScore}%)</button>` : ''}
-          ${!isAdmin && mySubjResult ? `<span class="badge ${mySubjResult.marks!=null?'badge-graded':'badge-pending'}">${mySubjResult.marks!=null?'📝 Subjective: '+mySubjResult.marks+' marks':'📝 Subjective: Pending Review'}</span>` : ''}
-          ${!isAdmin && attemptsLeft <= 0 ? `<span class="badge badge-graded">Max attempts reached</span>` : ''}
-          ${isAdmin ? `<button class="btn btn-ghost btn-sm" onclick="viewTestResults(${tIdx})">View All Submissions (${(t.results||[]).length})</button>` : ''}
+          ${!isAdmin && t.qPaper ? `<button class="btn btn-ghost btn-sm" onclick="previewQPaperStudent(${tIdx})">👁 View Question Paper</button>` : ''}
+          ${!isAdmin && mySubjResult ? `<div style="margin-top:6px;padding:12px 16px;border-radius:10px;background:${mySubjResult.marks!=null?'#e8f5e9':'#fff8e1'};border:1px solid ${mySubjResult.marks!=null?'#a5d6a7':'#ffcc80'};font-size:13px;font-weight:600;color:${mySubjResult.marks!=null?'var(--success)':'#c47a1a'};">
+            ${mySubjResult.marks!=null
+              ? `✅ Subjective Marks: <span style="font-size:18px;font-family:'Playfair Display',serif;">${mySubjResult.marks}</span>${mySubjResult.feedback?`<div style="font-size:12px;font-weight:400;color:var(--text2);margin-top:4px;">💬 ${esc(mySubjResult.feedback)}</div>`:''}` 
+              : `⏳ Subjective Submitted — Awaiting Instructor Review`}
+          </div>` : ''}
+          ${!isAdmin && !mySubjResult && !t.qPaper && (t.questions||[]).length && attemptsLeft <= 0 ? `<span class="badge badge-graded">✅ Max attempts reached</span>` : ''}
+          ${isAdmin ? `<button class="btn btn-ghost btn-sm" onclick="viewTestResults(${tIdx})">📊 View Submissions (${(t.results||[]).length})</button>` : ''}
         </div>
       </div>`;
     });
@@ -3273,6 +3280,74 @@ function renderTests() {
   document.getElementById('view-tests').innerHTML = html;
   window._questionBuilderCount = 0;
 }
+
+/* ===== STUDENT: SUBJECTIVE FLOW — QP VIEW + ANSWER SHEET ===== */
+
+// Called from "View Question Paper" button — shows paper only (no timer, no submit)
+function previewQPaperStudent(tIdx) {
+  const test = (window.DB.tests || [])[parseInt(tIdx)];
+  if (!test || !test.qPaper) { toast('Question paper not available.', 'error'); return; }
+  const u = window.currentUser;
+  const mySubjResult = (test.subjResults || []).find(r => r.studentId === u.id);
+  const mySubjResults = (test.subjResults || []).filter(r => r.studentId === u.id);
+  const hasQPOnly = !(test.questions||[]).length && test.qPaper;
+  const attemptCount = hasQPOnly ? mySubjResults.length : (test.results||[]).filter(r=>r.studentId===u.id).length;
+  const attemptsLeft = (test.maxAttempts || 1) - attemptCount;
+  const canStart = attemptsLeft > 0 && !mySubjResult;
+
+  const view = document.getElementById('view-quiz-take');
+  document.querySelectorAll('.main-content > div').forEach(el => el.classList.add('hidden'));
+  view.classList.remove('hidden');
+  view.innerHTML = `
+    <div class="page-header">
+      <h2>📄 ${esc(test.title)} — Question Paper</h2>
+      <p>Read the paper carefully before starting your answer sheet.</p>
+    </div>
+    <div class="card" style="margin-bottom:20px;text-align:center;padding:20px;">
+      <img src="${test.qPaper}" style="max-width:100%;border-radius:10px;border:1px solid var(--border);box-shadow:0 4px 20px rgba(0,0,0,0.12);" alt="Question Paper" />
+    </div>
+    ${canStart ? `
+    <div style="text-align:center;margin-bottom:24px;">
+      <button class="btn btn-primary" style="padding:14px 36px;font-size:16px;" onclick="startSubjectiveFlow(${tIdx})">
+        📝 Start Answering — Open Answer Sheet
+      </button>
+    </div>` : mySubjResult ? `
+    <div style="padding:16px 20px;border-radius:12px;background:${mySubjResult.marks!=null?'#e8f5e9':'#fff8e1'};border:1px solid ${mySubjResult.marks!=null?'#a5d6a7':'#ffcc80'};font-size:14px;font-weight:600;color:${mySubjResult.marks!=null?'var(--success)':'#c47a1a'};text-align:center;margin-bottom:20px;">
+      ${mySubjResult.marks!=null ? `✅ Marks Awarded: ${mySubjResult.marks}` : '⏳ Submitted — Awaiting Instructor Review'}
+    </div>` : ''}
+    <div style="text-align:center;">
+      <button class="btn btn-ghost" onclick="navTo('tests')">← Back to Tests</button>
+    </div>
+  `;
+}
+window.previewQPaperStudent = previewQPaperStudent;
+
+// Called from "Start Subjective Test / Section" button — full answer sheet with timer
+function startSubjectiveFlow(tIdx) {
+  const test = (window.DB.tests || [])[parseInt(tIdx)];
+  if (!test || !test.qPaper) { toast('No question paper found.', 'error'); return; }
+  activeSubjTIdx = parseInt(tIdx);
+  activeSubjTimeLeft = (test.subjDuration || 45) * 60;
+  _subjExtraRows = 10;
+  window._subjUploadedFiles = []; // reset uploads
+  const view = document.getElementById('view-quiz-take');
+  document.querySelectorAll('.main-content > div').forEach(el => el.classList.add('hidden'));
+  view.classList.remove('hidden');
+  renderSubjectiveSection();
+  clearInterval(activeSubjTimer);
+  activeSubjTimer = setInterval(() => {
+    activeSubjTimeLeft--;
+    const el = document.getElementById('subj-timer');
+    if (el) {
+      let mins = Math.floor(activeSubjTimeLeft / 60);
+      let secs = activeSubjTimeLeft % 60;
+      el.textContent = '⏱ ' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
+      el.className = 'timer-display ' + (activeSubjTimeLeft <= 60 ? 'danger' : activeSubjTimeLeft <= 300 ? 'warning' : '');
+    }
+    if (activeSubjTimeLeft <= 0) { clearInterval(activeSubjTimer); submitSubjectiveAnswer(true); }
+  }, 1000);
+}
+window.startSubjectiveFlow = startSubjectiveFlow;
 
 window._questionBuilderCount = 0;
 function addQuestionBuilder(prefill) {
@@ -3441,26 +3516,9 @@ function startTest(tIdx) {
   const test = (window.DB.tests || [])[tIdx];
   if (!test) return;
 
-  // If test has NO MCQ questions but HAS a question paper, go straight to subjective
+  // If test has NO MCQ questions but HAS a question paper, go straight to subjective flow
   if (!(test.questions||[]).length && test.qPaper) {
-    activeSubjTIdx = tIdx;
-    activeSubjTimeLeft = (test.subjDuration || 45) * 60;
-    const view = document.getElementById('view-quiz-take');
-    document.querySelectorAll('.main-content > div').forEach(el => el.classList.add('hidden'));
-    view.classList.remove('hidden');
-    renderSubjectiveSection();
-    clearInterval(activeSubjTimer);
-    activeSubjTimer = setInterval(() => {
-      activeSubjTimeLeft--;
-      const el = document.getElementById('subj-timer');
-      if (el) {
-        let mins = Math.floor(activeSubjTimeLeft / 60);
-        let secs = activeSubjTimeLeft % 60;
-        el.textContent = '⏱ ' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
-        el.className = 'timer-display ' + (activeSubjTimeLeft <= 60 ? 'danger' : activeSubjTimeLeft <= 300 ? 'warning' : '');
-      }
-      if (activeSubjTimeLeft <= 0) { clearInterval(activeSubjTimer); submitSubjectiveAnswer(true); }
-    }, 1000);
+    startSubjectiveFlow(tIdx);
     return;
   }
 
@@ -3587,8 +3645,8 @@ async function submitTest(timeUp = false) {
       </div>
       <div style="background:var(--bg);border-radius:12px;padding:20px;border:1px solid var(--border);text-align:center;">
         <div style="font-size:15px;font-weight:600;color:var(--primary);margin-bottom:8px;">📄 Subjective / Question Paper Section</div>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">The question paper will appear below. Read it carefully and write your answers on paper, then upload a clear photo of your answer sheet before the timer ends.</p>
-        <button class="btn btn-primary" onclick="startSubjectiveSection(${tIdx})">▶ Start Subjective Section (${test.subjDuration||45} min)</button>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">The question paper will appear next. Read it carefully and write your answers, then upload photos of your answer sheet.</p>
+        <button class="btn btn-primary" onclick="startSubjectiveFlow(${tIdx})">▶ Start Subjective Section (${test.subjDuration||45} min)</button>
       </div>`;
     activeTestIdx = null;
   } else {
@@ -3740,82 +3798,104 @@ function renderSubjectiveSection() {
   const today = new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
   const view = document.getElementById('view-quiz-take');
   view.innerHTML = `
-    <div class="page-header"><h2>${esc(test.title)} — Subjective Section</h2></div>
-    <div class="timer-display ${timerClass}" id="subj-timer">⏱ ${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}</div>
-    <div style="font-size:13px;color:var(--text3);text-align:center;margin-bottom:20px;">Complete within ${test.subjDuration||45} minutes • Submit your answers before time ends</div>
-
-    <!-- Question Paper -->
-    <div class="card" style="margin-bottom:16px;">
-      <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:12px;">📄 Question Paper</div>
-      <img src="${test.qPaper}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);" alt="Question Paper" />
+    <div class="page-header">
+      <h2>${esc(test.title)} — Subjective Section</h2>
     </div>
 
-    <!-- Digital Answer Sheet -->
-    <div class="card" style="margin-bottom:16px;border:2px solid var(--accent);border-radius:14px;padding:0;overflow:hidden;">
-      <!-- Sheet Header -->
-      <div style="background:linear-gradient(135deg,var(--primary) 0%,#1e5a8a 100%);padding:18px 20px;color:white;">
-        <div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700;margin-bottom:4px;">📝 Answer Sheet</div>
-        <div style="font-size:12px;opacity:.85;">${esc(test.title)}</div>
+    <!-- Timer -->
+    <div class="timer-display ${timerClass}" id="subj-timer">⏱ ${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}</div>
+    <div style="font-size:13px;color:var(--text3);text-align:center;margin-bottom:20px;">⏳ ${test.subjDuration||45} minutes total • Submit before time ends</div>
+
+    <!-- Question Paper -->
+    <div class="card" style="margin-bottom:20px;">
+      <div style="font-size:15px;font-weight:700;color:var(--primary);margin-bottom:14px;display:flex;align-items:center;gap:8px;">
+        <span style="background:var(--primary);color:white;border-radius:8px;padding:4px 10px;font-size:13px;">📄 Question Paper</span>
+        <span style="font-size:12px;font-weight:400;color:var(--text3);">Read carefully before answering</span>
       </div>
-      <!-- Student Info Bar -->
-      <div style="background:#f0f4f8;padding:14px 20px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
+      <img src="${test.qPaper}" style="max-width:100%;border-radius:10px;border:1px solid var(--border);box-shadow:0 2px 12px rgba(0,0,0,0.08);" alt="Question Paper" />
+    </div>
+
+    <!-- Answer Sheet -->
+    <div class="card" style="margin-bottom:20px;border:2px solid var(--accent);border-radius:14px;padding:0;overflow:hidden;">
+      <!-- Header -->
+      <div style="background:linear-gradient(135deg,var(--primary) 0%,#1e5a8a 100%);padding:18px 22px;color:white;">
+        <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;margin-bottom:4px;">📝 Digital Answer Sheet</div>
+        <div style="font-size:12px;opacity:.8;">Type your answers below — you can add as many rows as needed</div>
+      </div>
+      <!-- Student Info -->
+      <div style="background:#f0f4f8;padding:14px 22px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
         <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:220px;">
           <span style="font-size:12px;font-weight:600;color:var(--primary);white-space:nowrap;">Student Name:</span>
           <div style="position:relative;flex:1;">
             <input id="subj-student-name" type="text" value="${esc(u.name)}"
-              style="width:100%;padding:7px 32px 7px 10px;border:1.5px solid var(--accent);border-radius:8px;font-size:13px;font-weight:600;color:var(--primary);background:white;font-family:'DM Sans',sans-serif;box-sizing:border-box;outline:none;"
-              placeholder="Your full name" />
-            <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:13px;cursor:pointer;color:var(--accent);" title="Edit name" onclick="document.getElementById('subj-student-name').focus()">✏️</span>
+              style="width:100%;padding:8px 34px 8px 12px;border:1.5px solid var(--accent);border-radius:8px;font-size:13px;font-weight:600;color:var(--primary);background:white;font-family:'DM Sans',sans-serif;outline:none;" />
+            <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);font-size:14px;cursor:pointer;" onclick="document.getElementById('subj-student-name').focus()">✏️</span>
           </div>
         </div>
-        <div style="font-size:12px;color:var(--text3);white-space:nowrap;">📅 ${today}</div>
+        <div style="font-size:12px;color:var(--text3);">📅 ${today}</div>
       </div>
       <!-- Answer Rows -->
-      <div style="padding:18px 20px;" id="subj-answers-area">
+      <div style="padding:20px 22px;" id="subj-answers-area">
         ${[1,2,3,4,5,6,7,8,9,10].map(n => `
-        <div style="margin-bottom:18px;" id="subj-q-row-${n}">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-            <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--primary);color:white;font-size:12px;font-weight:700;flex-shrink:0;">Q${n}</span>
+        <div style="margin-bottom:20px;background:#fafcff;border-radius:10px;border:1px solid #e0ecf8;padding:14px 16px;" id="subj-q-row-${n}">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;background:var(--primary);color:white;font-size:12px;font-weight:700;flex-shrink:0;">Q${n}</span>
             <span style="font-size:13px;font-weight:700;color:#1a5fa0;">Question ${n}</span>
           </div>
-          <div style="display:flex;align-items:flex-start;gap:8px;">
-            <span style="font-size:12px;font-weight:700;color:var(--accent);margin-top:10px;flex-shrink:0;min-width:48px;">Answer:</span>
-            <textarea id="subj-ans-${n}" rows="3"
-              style="flex:1;padding:9px 12px;border:1.5px solid #d1e3f5;border-radius:8px;font-size:13px;color:#1a3a4a;font-family:'DM Sans',sans-serif;resize:vertical;outline:none;background:#fafcff;line-height:1.6;transition:border .15s;"
-              placeholder="Write your answer here…"
-              onfocus="this.style.border='1.5px solid var(--accent)'"
-              onblur="this.style.border='1.5px solid #d1e3f5'"></textarea>
-          </div>
+          <textarea id="subj-ans-${n}" rows="4"
+            style="width:100%;padding:10px 14px;border:1.5px solid #d1e3f5;border-radius:8px;font-size:14px;color:#1a3a4a;font-family:'DM Sans',sans-serif;resize:vertical;outline:none;background:white;line-height:1.7;transition:border .15s;box-sizing:border-box;"
+            placeholder="Write your answer for Question ${n} here…"
+            onfocus="this.style.border='1.5px solid var(--accent)'"
+            onblur="this.style.border='1.5px solid #d1e3f5'"></textarea>
         </div>`).join('')}
-        <div style="text-align:center;margin-top:4px;">
-          <button class="btn btn-ghost btn-sm" onclick="subjAddMoreRows()" style="font-size:12px;">＋ Add More Answer Rows</button>
+        <!-- Add More Button -->
+        <div style="text-align:center;padding:10px 0 4px;" id="subj-add-row-strip">
+          <button class="btn btn-ghost" onclick="subjAddMoreRows()" style="font-size:13px;padding:10px 24px;border-style:dashed;">
+            ＋ Add More Answer Rows
+          </button>
+          <div style="font-size:11px;color:var(--text3);margin-top:6px;">Add 5 more rows at a time — unlimited</div>
         </div>
       </div>
     </div>
 
-    <!-- Upload from Gallery -->
-    <div class="card" style="margin-bottom:16px;">
-      <div style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:10px;">📸 Upload Handwritten Answer Sheet</div>
-      <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Take a photo of your written answer sheet or choose from your gallery. Both digital answers above and uploaded photos are submitted together.</p>
-      <input type="file" id="subj-answer-file" accept="image/*" multiple style="display:none;" onchange="previewSubjAnswer()" />
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
-        <label for="subj-answer-file" style="display:inline-flex;align-items:center;gap:8px;padding:12px 20px;background:linear-gradient(135deg,var(--accent) 0%,#c8834a 100%);color:white;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;font-family:'DM Sans',sans-serif;box-shadow:0 2px 8px rgba(232,168,124,.35);transition:opacity .15s;" onmouseover="this.style.opacity='.88'" onmouseout="this.style.opacity='1'">
+    <!-- Upload Answer Images -->
+    <div class="card" style="margin-bottom:20px;">
+      <div style="font-size:15px;font-weight:700;color:var(--primary);margin-bottom:6px;">📸 Upload Handwritten Answer Sheet</div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Take photos of your handwritten answers and upload them here. You can upload as many images as you need — all pages of your answer sheet.</p>
+      
+      <!-- Upload Buttons -->
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+        <label style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;background:linear-gradient(135deg,var(--accent) 0%,#c8834a 100%);color:white;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;font-family:'DM Sans',sans-serif;box-shadow:0 2px 8px rgba(232,168,124,.35);transition:opacity .15s;" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
           <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
           📂 Choose from Gallery
+          <input type="file" accept="image/*" multiple style="display:none;" onchange="subjAddImages(this)" />
         </label>
-        <label for="subj-answer-file" style="display:inline-flex;align-items:center;gap:8px;padding:12px 20px;background:linear-gradient(135deg,var(--primary) 0%,#1e5a8a 100%);color:white;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;font-family:'DM Sans',sans-serif;box-shadow:0 2px 8px rgba(26,58,74,.3);transition:opacity .15s;" onclick="document.getElementById('subj-answer-file').setAttribute('capture','camera')" onmouseover="this.style.opacity='.88'" onmouseout="this.style.opacity='1'">
+        <label style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;background:linear-gradient(135deg,var(--primary) 0%,#1e5a8a 100%);color:white;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;font-family:'DM Sans',sans-serif;box-shadow:0 2px 8px rgba(26,58,74,.3);transition:opacity .15s;" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
           <svg viewBox="0 0 24 24" fill="white" width="18" height="18"><path d="M12 15.2A3.2 3.2 0 0 1 8.8 12 3.2 3.2 0 0 1 12 8.8 3.2 3.2 0 0 1 15.2 12 3.2 3.2 0 0 1 12 15.2M20 4h-3.17L15 2H9L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2z"/></svg>
           📷 Use Camera
+          <input type="file" accept="image/*" capture="camera" style="display:none;" onchange="subjAddImages(this)" />
         </label>
         <button class="btn btn-ghost" style="font-size:13px;" onclick="printAnswerSheet(${tIdx})">🖨 Print Blank Sheet</button>
       </div>
-      <div id="subj-answer-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;"></div>
+
+      <!-- Image count badge -->
+      <div id="subj-img-count" style="font-size:12px;color:var(--text3);margin-bottom:10px;display:none;">
+        <span id="subj-img-count-text"></span>
+      </div>
+
+      <!-- Preview grid -->
+      <div id="subj-answer-preview" style="display:flex;flex-wrap:wrap;gap:10px;"></div>
+      
+      <p style="font-size:11px;color:var(--text3);margin-top:12px;">💡 Tip: Each tap of "Choose from Gallery" lets you pick multiple images. Tap again to add more pages.</p>
     </div>
 
-    <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:8px;">
-      <button class="btn btn-primary" style="padding:13px 28px;font-size:15px;" onclick="submitSubjectiveAnswer(false)">📤 Submit Answer Sheet</button>
+    <!-- Submit Button -->
+    <div style="background:linear-gradient(135deg,#f7f4ef 0%,#eee9e0 100%);border:1px solid var(--border);border-radius:14px;padding:20px 22px;margin-bottom:16px;text-align:center;">
+      <button class="btn btn-primary" style="padding:14px 40px;font-size:16px;border-radius:12px;" onclick="submitSubjectiveAnswer(false)">
+        📤 Submit Answer Sheet
+      </button>
+      <p style="font-size:11px;color:var(--text3);margin-top:10px;">⚠️ Once submitted, you cannot make changes. Your instructor will review and assign marks.</p>
     </div>
-    <p style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center;">⚠️ Your answers will be submitted automatically when time runs out. Your instructor will review and assign marks.</p>
   `;
 }
 
@@ -3876,46 +3956,97 @@ let _subjExtraRows = 10;
 function subjAddMoreRows() {
   const area = document.getElementById('subj-answers-area');
   if (!area) return;
-  const addBtn = area.querySelector('div[style*="text-align:center"]');
+  const addStrip = document.getElementById('subj-add-row-strip');
   for (let n = _subjExtraRows + 1; n <= _subjExtraRows + 5; n++) {
     const div = document.createElement('div');
-    div.style.marginBottom = '18px';
+    div.style.cssText = 'margin-bottom:20px;background:#fafcff;border-radius:10px;border:1px solid #e0ecf8;padding:14px 16px;';
     div.id = 'subj-q-row-' + n;
     div.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-        <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--primary);color:white;font-size:12px;font-weight:700;flex-shrink:0;">Q${n}</span>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;background:var(--primary);color:white;font-size:12px;font-weight:700;flex-shrink:0;">Q${n}</span>
         <span style="font-size:13px;font-weight:700;color:#1a5fa0;">Question ${n}</span>
       </div>
-      <div style="display:flex;align-items:flex-start;gap:8px;">
-        <span style="font-size:12px;font-weight:700;color:var(--accent);margin-top:10px;flex-shrink:0;min-width:48px;">Answer:</span>
-        <textarea id="subj-ans-${n}" rows="3"
-          style="flex:1;padding:9px 12px;border:1.5px solid #d1e3f5;border-radius:8px;font-size:13px;color:#1a3a4a;font-family:'DM Sans',sans-serif;resize:vertical;outline:none;background:#fafcff;line-height:1.6;transition:border .15s;"
-          placeholder="Write your answer here…"
-          onfocus="this.style.border='1.5px solid var(--accent)'"
-          onblur="this.style.border='1.5px solid #d1e3f5'"></textarea>
-      </div>`;
-    if (addBtn) area.insertBefore(div, addBtn); else area.appendChild(div);
+      <textarea id="subj-ans-${n}" rows="4"
+        style="width:100%;padding:10px 14px;border:1.5px solid #d1e3f5;border-radius:8px;font-size:14px;color:#1a3a4a;font-family:'DM Sans',sans-serif;resize:vertical;outline:none;background:white;line-height:1.7;transition:border .15s;box-sizing:border-box;"
+        placeholder="Write your answer for Question ${n} here…"
+        onfocus="this.style.border='1.5px solid var(--accent)'"
+        onblur="this.style.border='1.5px solid #d1e3f5'"></textarea>`;
+    if (addStrip) area.insertBefore(div, addStrip); else area.appendChild(div);
   }
   _subjExtraRows += 5;
+  toast(`✅ 5 more rows added (now up to Q${_subjExtraRows})`, 'success');
 }
 window.subjAddMoreRows = subjAddMoreRows;
 window.renderSubjectiveSection = renderSubjectiveSection;
 
-function previewSubjAnswer() {
-  const input = document.getElementById('subj-answer-file');
+// Accumulated image store for subjective uploads
+window._subjUploadedFiles = [];
+
+function subjAddImages(input) {
+  if (!input || !input.files || !input.files.length) return;
   const preview = document.getElementById('subj-answer-preview');
-  if (!input || !preview) return;
-  preview.innerHTML = '';
+  const countEl = document.getElementById('subj-img-count');
+  const countText = document.getElementById('subj-img-count-text');
+  if (!preview) return;
+
   [...input.files].forEach(file => {
+    const idx = window._subjUploadedFiles.length;
+    window._subjUploadedFiles.push(file);
+
     const reader = new FileReader();
     reader.onload = e => {
+      const wrapper = document.createElement('div');
+      wrapper.id = 'subj-img-wrap-' + idx;
+      wrapper.style.cssText = 'position:relative;display:inline-block;';
+
       const img = document.createElement('img');
       img.src = e.target.result;
-      img.style.cssText = 'max-width:150px;max-height:150px;border-radius:8px;border:1px solid var(--border);object-fit:cover;';
-      preview.appendChild(img);
+      img.style.cssText = 'width:120px;height:120px;border-radius:10px;border:2px solid var(--border);object-fit:cover;display:block;box-shadow:0 2px 8px rgba(0,0,0,0.1);';
+
+      const badge = document.createElement('div');
+      badge.style.cssText = 'position:absolute;bottom:4px;left:4px;background:rgba(26,58,74,.75);color:white;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;';
+      badge.textContent = 'Page ' + (idx + 1);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.style.cssText = 'position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#ef4444;border:none;color:white;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;box-shadow:0 1px 4px rgba(0,0,0,.25);';
+      removeBtn.textContent = '✕';
+      removeBtn.title = 'Remove this image';
+      removeBtn.onclick = () => {
+        window._subjUploadedFiles[idx] = null;
+        wrapper.remove();
+        updateSubjImgCount();
+      };
+
+      wrapper.appendChild(img);
+      wrapper.appendChild(badge);
+      wrapper.appendChild(removeBtn);
+      preview.appendChild(wrapper);
+      updateSubjImgCount();
     };
     reader.readAsDataURL(file);
   });
+  // Reset input so same files can be re-selected if needed
+  input.value = '';
+}
+window.subjAddImages = subjAddImages;
+
+function updateSubjImgCount() {
+  const active = (window._subjUploadedFiles || []).filter(Boolean).length;
+  const countEl = document.getElementById('subj-img-count');
+  const countText = document.getElementById('subj-img-count-text');
+  if (countEl && countText) {
+    if (active > 0) {
+      countEl.style.display = 'block';
+      countText.innerHTML = `<span style="background:#e0f0ff;color:#1a5fa0;font-weight:700;padding:3px 10px;border-radius:20px;font-size:12px;">📎 ${active} image${active>1?'s':''} selected</span> — Tap "Choose from Gallery" again to add more pages`;
+    } else {
+      countEl.style.display = 'none';
+    }
+  }
+}
+window.updateSubjImgCount = updateSubjImgCount;
+
+function previewSubjAnswer() {
+  // Legacy stub — now handled by subjAddImages
 }
 window.previewSubjAnswer = previewSubjAnswer;
 
@@ -3941,11 +4072,19 @@ async function submitSubjectiveAnswer(timeUp = false) {
     rowIdx++;
   }
 
-  // Collect uploaded images
-  const input = document.getElementById('subj-answer-file');
+  // Collect uploaded images from the accumulated store
   const images = [];
-  if (input && input.files.length) {
-    for (const file of input.files) {
+  const uploadedFiles = (window._subjUploadedFiles || []).filter(Boolean);
+  if (uploadedFiles.length) {
+    for (const file of uploadedFiles) {
+      const data = await fileToBase64(file);
+      images.push({ data, name: file.name });
+    }
+  }
+  // Also check legacy file input if present
+  const legacyInput = document.getElementById('subj-answer-file');
+  if (legacyInput && legacyInput.files && legacyInput.files.length) {
+    for (const file of legacyInput.files) {
       const data = await fileToBase64(file);
       images.push({ data, name: file.name });
     }
